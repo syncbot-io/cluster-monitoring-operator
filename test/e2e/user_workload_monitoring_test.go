@@ -66,6 +66,8 @@ func TestUserWorkloadMonitoringMetrics(t *testing.T) {
 	}
 
 	f.MustCreateOrUpdateConfigMap(t, uwmCM)
+	defer f.MustDeleteConfigMap(t, uwmCM)
+
 	f.AssertStatefulSetExistsAndRollout("prometheus-user-workload", f.UserWorkloadMonitoringNs)(t)
 	setupUserApplication(t, f)
 
@@ -126,6 +128,8 @@ func TestUserWorkloadMonitoringAlerting(t *testing.T) {
 	}
 
 	f.MustCreateOrUpdateConfigMap(t, uwmCM)
+	defer f.MustDeleteConfigMap(t, uwmCM)
+
 	f.AssertStatefulSetExistsAndRollout("prometheus-user-workload", f.UserWorkloadMonitoringNs)(t)
 	setupUserApplication(t, f)
 
@@ -178,6 +182,8 @@ func TestUserWorkloadMonitoringOptOut(t *testing.T) {
 	}
 
 	f.MustCreateOrUpdateConfigMap(t, uwmCM)
+	defer f.MustDeleteConfigMap(t, uwmCM)
+
 	f.AssertStatefulSetExistsAndRollout("prometheus-user-workload", f.UserWorkloadMonitoringNs)(t)
 	setupUserApplication(t, f)
 
@@ -212,6 +218,7 @@ func TestUserWorkloadMonitoringGrpcSecrets(t *testing.T) {
 	}
 
 	f.MustCreateOrUpdateConfigMap(t, uwmCM)
+	defer f.MustDeleteConfigMap(t, uwmCM)
 
 	for _, scenario := range []struct {
 		name string
@@ -260,11 +267,14 @@ func TestUserWorkloadMonitoringWithAdditionalAlertmanagerConfigs(t *testing.T) {
 		},
 	}
 	f.MustCreateOrUpdateConfigMap(t, uwmCM)
+	defer f.MustDeleteConfigMap(t, uwmCM)
+
+	f.AssertStatefulSetExistsAndRollout("prometheus-user-workload", f.UserWorkloadMonitoringNs)(t)
 
 	scenarios := []scenario{
-		{"assert 5 alertmanagers are discovered (3 built-in and 2 from the additional configs)", assertAlertmanagerInstancesDiscovered(5)},
+		{"assert 4 alertmanagers are discovered (2 built-in and 2 from the additional configs)", assertAlertmanagerInstancesDiscovered(4)},
 		{"disable additional alertmanagers", disableAdditionalAlertmanagerConfigs},
-		{"assert 3 alertmanagers are discovered", assertAlertmanagerInstancesDiscovered(3)},
+		{"assert 2 alertmanagers are discovered", assertAlertmanagerInstancesDiscovered(2)},
 	}
 
 	for _, scenario := range scenarios {
@@ -473,7 +483,7 @@ func assertUserWorkloadMetrics(t *testing.T) {
 	}
 
 	err = framework.Poll(5*time.Second, 5*time.Minute, func() error {
-		body, err := f.AlertmanagerClient.AlertmanagerQueryAlerts(
+		body, err := f.AlertmanagerClient.GetAlertmanagerAlerts(
 			"filter", `alertname="VersionAlert"`,
 			"active", "true",
 		)
@@ -565,13 +575,19 @@ func assertUserWorkloadRules(t *testing.T) {
 func assertTenancyForMetrics(t *testing.T) {
 	const testAccount = "test-metrics"
 
-	_, err := f.CreateServiceAccount(userWorkloadTestNs, testAccount)
+	err := framework.Poll(2*time.Second, 10*time.Second, func() error {
+		_, err := f.CreateServiceAccount(userWorkloadTestNs, testAccount)
+		return err
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Grant enough permissions to the account so it can read metrics.
-	_, err = f.CreateRoleBindingFromClusterRole(userWorkloadTestNs, testAccount, "admin")
+	err = framework.Poll(2*time.Second, 10*time.Second, func() error {
+		_, err = f.CreateRoleBindingFromClusterRole(userWorkloadTestNs, testAccount, "admin")
+		return err
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -794,7 +810,6 @@ func assertTenancyForRules(t *testing.T) {
 		}
 
 		type testData struct {
-			file      string
 			ruleType  string
 			name      string
 			namespace string
@@ -802,19 +817,16 @@ func assertTenancyForRules(t *testing.T) {
 
 		expected := []testData{
 			{
-				file:      "/etc/prometheus/rules/prometheus-user-workload-rulefiles-0/user-workload-test-prometheus-example-rule-leaf.yaml",
 				ruleType:  "recording",
 				name:      "version:blah:leaf:count",
 				namespace: "user-workload-test",
 			},
 			{
-				file:      "/etc/thanos/rules/thanos-ruler-user-workload-rulefiles-0/user-workload-test-prometheus-example-rule.yaml",
 				ruleType:  "alerting",
 				name:      "VersionAlert",
 				namespace: "user-workload-test",
 			},
 			{
-				file:      "/etc/thanos/rules/thanos-ruler-user-workload-rulefiles-0/user-workload-test-prometheus-example-rule.yaml",
 				ruleType:  "recording",
 				name:      "version:blah:count",
 				namespace: "user-workload-test",
@@ -836,7 +848,6 @@ func assertTenancyForRules(t *testing.T) {
 				}
 
 				got = append(got, testData{
-					file:      group.Path("file").Data().(string),
 					ruleType:  rule.Path("type").Data().(string),
 					name:      rule.Path("name").Data().(string),
 					namespace: labels["namespace"].Data().(string),
@@ -883,50 +894,51 @@ func assertTenancyForRules(t *testing.T) {
 func assertTenancyForLabels(t *testing.T) {
 	const testAccount = "test-labels"
 
-	_, err := f.CreateServiceAccount(userWorkloadTestNs, testAccount)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Grant enough permissions to read labels.
-	_, err = f.CreateRoleBindingFromClusterRole(userWorkloadTestNs, testAccount, "admin")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var token string
-	err = framework.Poll(5*time.Second, 5*time.Minute, func() error {
-		token, err = f.GetServiceAccountToken(userWorkloadTestNs, testAccount)
-		if err != nil {
-			return err
-		}
-		return nil
+	err := framework.Poll(2*time.Second, 10*time.Second, func() error {
+		_, err := f.CreateServiceAccount(userWorkloadTestNs, testAccount)
+		return err
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// The tenancy port (9092) is only exposed in-cluster so we need to use
-	// port forwarding to access kube-rbac-proxy.
-	host, cleanUp, err := f.ForwardPort(t, "thanos-querier", 9092)
+	// Grant enough permissions to read labels.
+	err = framework.Poll(2*time.Second, 10*time.Second, func() error {
+		_, err = f.CreateRoleBindingFromClusterRole(userWorkloadTestNs, testAccount, "admin")
+		return err
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanUp()
 
-	client := framework.NewPrometheusClient(
-		host,
-		token,
-		&framework.QueryParameterInjector{
-			Name:  "namespace",
-			Value: userWorkloadTestNs,
-		},
-	)
-
-	t.Logf("Checking all labels")
+	var token string
+	err = framework.Poll(5*time.Second, time.Minute, func() error {
+		token, err = f.GetServiceAccountToken(userWorkloadTestNs, testAccount)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// check /api/v1/labels endpoint
 	err = framework.Poll(5*time.Second, time.Minute, func() error {
+		// The tenancy port (9092) is only exposed in-cluster so we need to use
+		// port forwarding to access kube-rbac-proxy.
+		host, cleanUp, err := f.ForwardPort(t, "thanos-querier", 9092)
+		if err != nil {
+			return err
+		}
+		defer cleanUp()
+
+		client := framework.NewPrometheusClient(
+			host,
+			token,
+			&framework.QueryParameterInjector{
+				Name:  "namespace",
+				Value: userWorkloadTestNs,
+			},
+		)
+
 		resp, err := client.Do("GET", "/api/v1/labels", nil)
 		if err != nil {
 			return err
@@ -952,31 +964,23 @@ func assertTenancyForLabels(t *testing.T) {
 			return err
 		}
 
-		for _, label := range labels {
-			t.Logf("label %q", label.Data().(string))
-		}
-
 		if len(labels) == 0 {
-			return errors.Errorf("expecting a label list with at least one item.")
+			return errors.Errorf("expecting a label list with at least one item, got zero")
 		}
 
 		return nil
-
 	})
 	if err != nil {
 		t.Fatalf("failed to query labels from Thanos querier: %v", err)
 	}
 
-	// check /api/v1/label/namespace/values has a single value
-	t.Logf("Checking Label namespace having a single value")
-	const label = "namespace"
-
+	// Check that /api/v1/label/namespace/values returns a single value.
 	err = framework.Poll(5*time.Second, time.Minute, func() error {
 		// The tenancy port (9092) is only exposed in-cluster so we need to use
 		// port forwarding to access kube-rbac-proxy.
 		host, cleanUp, err := f.ForwardPort(t, "thanos-querier", 9092)
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
 		defer cleanUp()
 
@@ -989,7 +993,7 @@ func assertTenancyForLabels(t *testing.T) {
 			},
 		)
 
-		b, err := client.PrometheusLabel(label)
+		b, err := client.PrometheusLabel("namespace")
 		if err != nil {
 			return err
 		}
@@ -1005,16 +1009,18 @@ func assertTenancyForLabels(t *testing.T) {
 		}
 
 		if len(values) != 1 {
-			return errors.Errorf("expecting for label %q value list with exact one item.", label)
+			return errors.Errorf("expecting only 1 value for the 'namespace' label but got %d", len(values))
 		}
 
 		if values[0].Data().(string) != userWorkloadTestNs {
-			return errors.Errorf("expecting for label %q having value %q, but got %q .", label, userWorkloadTestNs, values[0].Data().(string))
+			return errors.Errorf("expecting 'namespace' label value to be %q but got %q .", userWorkloadTestNs, values[0].Data().(string))
 		}
 
 		return nil
 	})
-
+	if err != nil {
+		t.Fatalf("failed to query namespace label from Thanos querier: %v", err)
+	}
 }
 
 func assertGRPCTLSRotation(t *testing.T) {

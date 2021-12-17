@@ -223,6 +223,8 @@ data:
     # a particular virt_platform type (nodes may report multiple types).
     # This metric helps identify issues specific to a virtualization
     # type or bare metal.
+    #
+    # consumers: (@openshift/openshift-team-cluster-manager)
     - '{__name__="cluster:virt_platform_nodes:sum"}'
     #
     # owners: (@openshift/openshift-team-monitoring, @smarterclayton)
@@ -511,7 +513,7 @@ data:
     #
     # owners: (https://github.com/open-cluster-management, @open-cluster-management/squad-kui-admins)
     #
-    # visual_web_terminal_sessions_total is the count of Visual Web Terminal sessions created 
+    # visual_web_terminal_sessions_total is the count of Visual Web Terminal sessions created
     # on the hub cluster.
     - '{__name__="visual_web_terminal_sessions_total"}'
     #
@@ -594,6 +596,11 @@ data:
     #
     # The current amount of CPU used by Application Services products, aggregated by product name.
     - '{__name__="appsvcs:cores_by_product:sum"}'
+    #
+    # owners: (https://github.com/openshift/cluster-node-tuning-operator)
+    #
+    # Number of nodes using a custom TuneD profile not shipped by the Node Tuning Operator.
+    - '{__name__="nto_custom_profiles:count"}'
 kind: ConfigMap
 metadata:
   name: telemetry-config

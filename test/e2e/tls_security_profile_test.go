@@ -17,15 +17,16 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"strings"
+	"testing"
+	"time"
+
 	configv1 "github.com/openshift/api/config/v1"
 	"github.com/openshift/cluster-monitoring-operator/pkg/manifests"
 	"github.com/openshift/cluster-monitoring-operator/test/e2e/framework"
 	"github.com/openshift/library-go/pkg/crypto"
-	appsv1 "k8s.io/api/apps/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"strings"
-	"testing"
-	"time"
 )
 
 func TestTLSSecurityProfileConfiguration(t *testing.T) {
@@ -84,44 +85,90 @@ func TestTLSSecurityProfileConfiguration(t *testing.T) {
 	for _, tt := range testCases {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			setTlsSecurityProfile(t, tt.profile)
-			assertCorrectTLSConfiguration(t, tt.expectedCipherSuite, tt.expectedMinTLSVersion)
+			setTLSSecurityProfile(t, tt.profile)
+			assertCorrectTLSConfiguration(t, "prometheus-operator", "deployment",
+				manifests.PrometheusOperatorWebTLSCipherSuitesFlag,
+				manifests.PrometheusOperatorWebTLSMinTLSVersionFlag, tt.expectedCipherSuite, tt.expectedMinTLSVersion)
+			assertCorrectTLSConfiguration(t, "prometheus-adapter", "deployment",
+				manifests.PrometheusAdapterTLSCipherSuitesFlag,
+				manifests.PrometheusAdapterTLSMinTLSVersionFlag, tt.expectedCipherSuite, tt.expectedMinTLSVersion)
+			assertCorrectTLSConfiguration(t, "kube-state-metrics", "deployment",
+				manifests.KubeRbacProxyTLSCipherSuitesFlag,
+				manifests.KubeRbacProxyMinTLSVersionFlag, tt.expectedCipherSuite, tt.expectedMinTLSVersion)
+			assertCorrectTLSConfiguration(t, "openshift-state-metrics", "deployment",
+				manifests.KubeRbacProxyTLSCipherSuitesFlag,
+				manifests.KubeRbacProxyMinTLSVersionFlag, tt.expectedCipherSuite, tt.expectedMinTLSVersion)
+			assertCorrectTLSConfiguration(t, "node-exporter", "daemonset",
+				manifests.KubeRbacProxyTLSCipherSuitesFlag,
+				manifests.KubeRbacProxyMinTLSVersionFlag, tt.expectedCipherSuite, tt.expectedMinTLSVersion)
+			assertCorrectTLSConfiguration(t, "telemeter-client", "deployment",
+				manifests.KubeRbacProxyTLSCipherSuitesFlag,
+				manifests.KubeRbacProxyMinTLSVersionFlag, tt.expectedCipherSuite, tt.expectedMinTLSVersion)
+			assertCorrectTLSConfiguration(t, "thanos-querier", "deployment",
+				manifests.KubeRbacProxyTLSCipherSuitesFlag,
+				manifests.KubeRbacProxyMinTLSVersionFlag, tt.expectedCipherSuite, tt.expectedMinTLSVersion)
+			assertCorrectTLSConfiguration(t, "grafana", "deployment",
+				manifests.KubeRbacProxyTLSCipherSuitesFlag,
+				manifests.KubeRbacProxyMinTLSVersionFlag, tt.expectedCipherSuite, tt.expectedMinTLSVersion)
+			assertCorrectTLSConfiguration(t, "alertmanager-main", "statefulset",
+				manifests.KubeRbacProxyTLSCipherSuitesFlag,
+				manifests.KubeRbacProxyMinTLSVersionFlag, tt.expectedCipherSuite, tt.expectedMinTLSVersion)
+			assertCorrectTLSConfiguration(t, "prometheus-k8s", "statefulset",
+				manifests.KubeRbacProxyTLSCipherSuitesFlag,
+				manifests.KubeRbacProxyMinTLSVersionFlag, tt.expectedCipherSuite, tt.expectedMinTLSVersion)
 		})
 	}
 }
 
-func assertCorrectTLSConfiguration(t *testing.T, ciphers []string, tlsVersion string) {
+func assertCorrectTLSConfiguration(t *testing.T, componentName, objectType, tlsCipherSuiteFlag, tlsMinTLSVersionFlag string, expectedCipherSuite []string, expectedTLSVersion string) {
 	ctx := context.Background()
+	var containers []v1.Container
+
 	if err := framework.Poll(5*time.Second, 5*time.Minute, func() (err error) {
-		d, err := f.KubeClient.AppsV1().Deployments("openshift-monitoring").Get(ctx, "prometheus-operator", metav1.GetOptions{})
-		if err != nil {
-			return err
+		switch objectType {
+		case "deployment":
+			d, err := f.KubeClient.AppsV1().Deployments("openshift-monitoring").Get(ctx, componentName, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+			containers = d.Spec.Template.Spec.Containers
+		case "daemonset":
+			ds, err := f.KubeClient.AppsV1().DaemonSets("openshift-monitoring").Get(ctx, componentName, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+			containers = ds.Spec.Template.Spec.Containers
+		case "statefulset":
+			sts, err := f.KubeClient.AppsV1().StatefulSets("openshift-monitoring").Get(ctx, componentName, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+			containers = sts.Spec.Template.Spec.Containers
 		}
 
-		isCipherSuiteArgCorrect := correctCipherSuiteArg(ciphers, d)
+		isCipherSuiteArgCorrect := correctCipherSuiteArg(tlsCipherSuiteFlag, expectedCipherSuite, containers)
 		if !isCipherSuiteArgCorrect {
-			return fmt.Errorf("invalid cipher suite set for prometheus-operator in openshift-monitoring namespace")
+			return fmt.Errorf("invalid cipher suite set for %s in openshift-monitoring namespace", componentName)
 		}
 
-		validTLSVersion := correctMinTLSVersion(tlsVersion, d)
+		validTLSVersion := correctMinTLSVersion(tlsMinTLSVersionFlag, expectedTLSVersion, containers)
 		if !validTLSVersion {
-			return fmt.Errorf("invalid tls version set for prometheus-operator in openshift-monitoring namespace")
+			return fmt.Errorf("invalid tls version set for %s in openshift-monitoring namespace", componentName)
 		}
-
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func correctCipherSuiteArg(ciphers []string, d *appsv1.Deployment) bool {
+func correctCipherSuiteArg(tlsCipherSuitesArg string, ciphers []string, containers []v1.Container) bool {
 	expectedCiphersArg := fmt.Sprintf(
 		"%s%s",
-		manifests.PrometheusOperatorWebTLSCipherSuitesFlag,
+		tlsCipherSuitesArg,
 		strings.Join(crypto.OpenSSLToIANACipherSuites(ciphers), ","),
 	)
 
-	for _, c := range d.Spec.Template.Spec.Containers {
+	for _, c := range containers {
 		for _, arg := range c.Args {
 			if arg == expectedCiphersArg {
 				return true
@@ -131,9 +178,9 @@ func correctCipherSuiteArg(ciphers []string, d *appsv1.Deployment) bool {
 	return false
 }
 
-func correctMinTLSVersion(tlsVersion string, d *appsv1.Deployment) bool {
-	expectedVersionArg := fmt.Sprintf("%s%s", manifests.PrometheusOperatorWebTLSMinTLSVersionFlag, tlsVersion)
-	for _, c := range d.Spec.Template.Spec.Containers {
+func correctMinTLSVersion(minTLSVersionArg, tlsVersion string, containers []v1.Container) bool {
+	expectedVersionArg := fmt.Sprintf("%s%s", minTLSVersionArg, tlsVersion)
+	for _, c := range containers {
 		for _, arg := range c.Args {
 			if arg == expectedVersionArg {
 				return true
@@ -143,7 +190,7 @@ func correctMinTLSVersion(tlsVersion string, d *appsv1.Deployment) bool {
 	return false
 }
 
-func setTlsSecurityProfile(t *testing.T, tlsSecurityProfile *configv1.TLSSecurityProfile) {
+func setTLSSecurityProfile(t *testing.T, tlsSecurityProfile *configv1.TLSSecurityProfile) {
 	ctx := context.Background()
 	apiserverConfig, err := f.OpenShiftConfigClient.ConfigV1().APIServers().Get(ctx, "cluster", metav1.GetOptions{})
 	if err != nil {

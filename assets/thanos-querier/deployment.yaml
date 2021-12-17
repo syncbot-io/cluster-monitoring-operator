@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/managed-by: cluster-monitoring-operator
     app.kubernetes.io/name: thanos-query
     app.kubernetes.io/part-of: openshift-monitoring
-    app.kubernetes.io/version: 0.22.0
+    app.kubernetes.io/version: 0.23.1
   name: thanos-querier
   namespace: openshift-monitoring
 spec:
@@ -28,9 +28,10 @@ spec:
       labels:
         app.kubernetes.io/component: query-layer
         app.kubernetes.io/instance: thanos-querier
+        app.kubernetes.io/managed-by: cluster-monitoring-operator
         app.kubernetes.io/name: thanos-query
         app.kubernetes.io/part-of: openshift-monitoring
-        app.kubernetes.io/version: 0.22.0
+        app.kubernetes.io/version: 0.23.1
     spec:
       affinity:
         podAntiAffinity:
@@ -65,7 +66,7 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
-        image: quay.io/thanos/thanos:v0.22.0
+        image: quay.io/thanos/thanos:v0.23.1
         name: thanos-query
         ports:
         - containerPort: 9090

@@ -1,12 +1,15 @@
 local tlsVolumeName = 'prometheus-operator-tls';
 local certsCAVolumeName = 'operator-certs-ca-bundle';
 
+local generateCertInjection = import '../utils/generate-certificate-injection.libsonnet';
+
 local operator = import 'github.com/prometheus-operator/kube-prometheus/jsonnet/kube-prometheus/components/prometheus-operator.libsonnet';
+local generateSecret = import '../utils/generate-secret.libsonnet';
 
 function(params)
   local cfg = params;
   operator(cfg) + {
-
+    kubeRbacProxySecret: generateSecret.staticAuthSecret(cfg.namespace, cfg.commonLabels, 'prometheus-operator-kube-rbac-proxy-config'),
     deployment+: {
       metadata+: {
         labels+: {
@@ -15,6 +18,11 @@ function(params)
       },
       spec+: {
         template+: {
+          metadata+: {
+            labels+: {
+              'app.kubernetes.io/managed-by': 'cluster-monitoring-operator',
+            },
+          },
           spec+: {
             nodeSelector+: {
               'node-role.kubernetes.io/master': '',
@@ -66,6 +74,7 @@ function(params)
                         '--tls-private-key-file=/etc/tls/private/tls.key',
                         '--client-ca-file=/etc/tls/client/client-ca.crt',
                         '--upstream-ca-file=/etc/configmaps/operator-cert-ca-bundle/service-ca.crt',
+                        '--config-file=/etc/kube-rbac-policy/config.yaml',
                       ],
                       terminationMessagePolicy: 'FallbackToLogsOnError',
                       volumeMounts: [
@@ -83,6 +92,11 @@ function(params)
                           mountPath: '/etc/tls/client',
                           name: 'metrics-client-ca',
                           readOnly: false,
+                        },
+                        {
+                          mountPath: '/etc/kube-rbac-policy',
+                          name: 'prometheus-operator-kube-rbac-proxy-config',
+                          readOnly: true,
                         },
                       ],
                       securityContext: {},
@@ -105,10 +119,11 @@ function(params)
                 },
 
               },
+              generateCertInjection.SCOCaBundleVolume(certsCAVolumeName),
               {
-                name: certsCAVolumeName,
-                configMap: {
-                  name: certsCAVolumeName,
+                name: 'prometheus-operator-kube-rbac-proxy-config',
+                secret: {
+                  secretName: 'prometheus-operator-kube-rbac-proxy-config',
                 },
               },
               {
@@ -153,20 +168,7 @@ function(params)
       },
     },
 
-    operatorCertsCaBundle: {
-      apiVersion: 'v1',
-      kind: 'ConfigMap',
-      metadata: {
-        annotations: {
-          'service.alpha.openshift.io/inject-cabundle': 'true',
-        },
-        name: certsCAVolumeName,
-        namespace: cfg.namespace,
-      },
-      data: {
-        'service-ca.crt': '',
-      },
-    },
+    operatorCertsCaBundle: generateCertInjection.SCOCaBundleCM(cfg.namespace, certsCAVolumeName),
 
     prometheusRuleValidatingWebhook: {
       apiVersion: 'admissionregistration.k8s.io/v1',

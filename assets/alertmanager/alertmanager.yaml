@@ -2,27 +2,26 @@ apiVersion: monitoring.coreos.com/v1
 kind: Alertmanager
 metadata:
   labels:
-    alertmanager: main
     app.kubernetes.io/component: alert-router
+    app.kubernetes.io/instance: main
     app.kubernetes.io/name: alertmanager
     app.kubernetes.io/part-of: openshift-monitoring
-    app.kubernetes.io/version: 0.22.2
+    app.kubernetes.io/version: 0.23.0
   name: main
   namespace: openshift-monitoring
 spec:
   affinity:
     podAntiAffinity:
-      preferredDuringSchedulingIgnoredDuringExecution:
-      - podAffinityTerm:
-          labelSelector:
-            matchLabels:
-              app.kubernetes.io/component: alert-router
-              app.kubernetes.io/name: alertmanager
-              app.kubernetes.io/part-of: openshift-monitoring
-          namespaces:
-          - openshift-monitoring
-          topologyKey: kubernetes.io/hostname
-        weight: 100
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: alert-router
+            app.kubernetes.io/instance: main
+            app.kubernetes.io/name: alertmanager
+            app.kubernetes.io/part-of: openshift-monitoring
+        namespaces:
+        - openshift-monitoring
+        topologyKey: kubernetes.io/hostname
   containers:
   - args:
     - -provider=openshift
@@ -135,7 +134,7 @@ spec:
       requests:
         cpu: 1m
         memory: 10Mi
-  image: quay.io/prometheus/alertmanager:v0.22.2
+  image: quay.io/prometheus/alertmanager:v0.23.0
   listenLocal: true
   nodeSelector:
     kubernetes.io/os: linux
@@ -144,11 +143,12 @@ spec:
       target.workload.openshift.io/management: '{"effect": "PreferredDuringScheduling"}'
     labels:
       app.kubernetes.io/component: alert-router
+      app.kubernetes.io/instance: main
       app.kubernetes.io/name: alertmanager
       app.kubernetes.io/part-of: openshift-monitoring
-      app.kubernetes.io/version: 0.22.2
+      app.kubernetes.io/version: 0.23.0
   priorityClassName: system-cluster-critical
-  replicas: 3
+  replicas: 2
   resources:
     requests:
       cpu: 4m
@@ -163,7 +163,7 @@ spec:
     runAsNonRoot: true
     runAsUser: 65534
   serviceAccountName: alertmanager-main
-  version: 0.22.2
+  version: 0.23.0
   volumes:
   - configMap:
       name: metrics-client-ca

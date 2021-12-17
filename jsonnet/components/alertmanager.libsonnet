@@ -1,26 +1,16 @@
 local alertmanager = import 'github.com/prometheus-operator/kube-prometheus/jsonnet/kube-prometheus/components/alertmanager.libsonnet';
 // TODO: replace current addition of kube-rbac-proxy with upstream lib
 // local krp = import 'github.com/prometheus-operator/kube-prometheus/jsonnet/kube-prometheus/components/kube-rbac-proxy.libsonnet';
+local generateCertInjection = import '../utils/generate-certificate-injection.libsonnet';
 local generateSecret = import '../utils/generate-secret.libsonnet';
 
 function(params)
-  local cfg = params;
+  local cfg = params {
+    replicas: 2,
+  };
 
   alertmanager(cfg) {
-    trustedCaBundle: {
-      apiVersion: 'v1',
-      kind: 'ConfigMap',
-      metadata: {
-        name: 'alertmanager-trusted-ca-bundle',
-        namespace: cfg.namespace,
-        labels: {
-          'config.openshift.io/inject-trusted-cabundle': 'true',
-        },
-      },
-      data: {
-        'ca-bundle.crt': '',
-      },
-    },
+    trustedCaBundle: generateCertInjection.trustedCNOCaBundleCM(cfg.namespace, 'alertmanager-trusted-ca-bundle'),
 
     // OpenShift route to access the Alertmanager UI.
 
@@ -416,7 +406,9 @@ function(params)
         ],
       },
     },
-    // Removing PDB since it doesn't allow cluster upgrade when hard pod anti affinity is not set https://github.com/openshift/cluster-monitoring-operator/pull/1198
-    // Review hard anti-affinity changes and then we can add back PDB
-    podDisruptionBudget:: {},
+
+    // TODO: remove podDisruptionBudget once https://github.com/prometheus-operator/kube-prometheus/pull/1156 is merged
+    podDisruptionBudget+: {
+      apiVersion: 'policy/v1',
+    },
   }

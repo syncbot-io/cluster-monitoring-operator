@@ -24,6 +24,7 @@ import (
 	monv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	v1 "k8s.io/api/core/v1"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
+	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 )
 
 const (
@@ -177,6 +178,7 @@ type PrometheusK8sConfig struct {
 	RemoteWrite         []RemoteWriteSpec                    `json:"remoteWrite"`
 	TelemetryMatches    []string                             `json:"-"`
 	AlertmanagerConfigs []AdditionalAlertmanagerConfig       `json:"additionalAlertmanagerConfigs"`
+	QueryLogFile        string                               `json:"queryLogFile"`
 }
 
 type AdditionalAlertmanagerConfig struct {
@@ -265,9 +267,25 @@ type OpenShiftStateMetricsConfig struct {
 	Tolerations  []v1.Toleration   `json:"tolerations"`
 }
 
+// Prometheus Adapater related configurations
 type K8sPrometheusAdapter struct {
 	NodeSelector map[string]string `json:"nodeSelector"`
 	Tolerations  []v1.Toleration   `json:"tolerations"`
+
+	// Prometheus Adapter audit logging related configuration
+	Audit *Audit `json:"audit"`
+}
+
+// Audit profile configurations
+type Audit struct {
+
+	// The Profile to set for audit logs. This currently matches the various
+	// audit log levels such as: "metadata, request, requestresponse, none".
+	// The default audit log level is "metadata"
+	//
+	// see: https://kubernetes.io/docs/tasks/debug-application-cluster/audit/#audit-policy
+	// for more information about auditing and log levels.
+	Profile auditv1.Level `json:"profile"`
 }
 
 type EtcdConfig struct {
@@ -364,9 +382,17 @@ func (c *Config) applyDefaults() {
 			TelemeterServerURL: "https://infogw.api.openshift.com/",
 		}
 	}
+
 	if c.ClusterMonitoringConfiguration.K8sPrometheusAdapter == nil {
 		c.ClusterMonitoringConfiguration.K8sPrometheusAdapter = &K8sPrometheusAdapter{}
 	}
+	if c.ClusterMonitoringConfiguration.K8sPrometheusAdapter.Audit == nil {
+		c.ClusterMonitoringConfiguration.K8sPrometheusAdapter.Audit = &Audit{}
+	}
+	if c.ClusterMonitoringConfiguration.K8sPrometheusAdapter.Audit.Profile == "" {
+		c.ClusterMonitoringConfiguration.K8sPrometheusAdapter.Audit.Profile = auditv1.LevelMetadata
+	}
+
 	if c.ClusterMonitoringConfiguration.EtcdConfig == nil {
 		c.ClusterMonitoringConfiguration.EtcdConfig = &EtcdConfig{}
 	}
@@ -494,6 +520,7 @@ type PrometheusRestrictedConfig struct {
 	EnforcedSampleLimit *uint64                              `json:"enforcedSampleLimit"`
 	EnforcedTargetLimit *uint64                              `json:"enforcedTargetLimit"`
 	AlertmanagerConfigs []AdditionalAlertmanagerConfig       `json:"additionalAlertmanagerConfigs"`
+	QueryLogFile        string                               `json:"queryLogFile"`
 }
 
 func (u *UserWorkloadConfiguration) applyDefaults() {

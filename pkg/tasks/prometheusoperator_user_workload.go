@@ -85,12 +85,17 @@ func (t *PrometheusOperatorUserWorkloadTask) create(ctx context.Context) error {
 		return errors.Wrap(err, "reconciling UserWorkload Prometheus Operator Service failed")
 	}
 
-	config, err := t.client.GetAPIServerConfig(ctx, "cluster")
+	rpc, err := t.factory.PrometheusOperatorUserWorkloadCRBACProxySecret()
 	if err != nil {
-		return errors.Wrap(err, "failed to get API server configuration")
+		return errors.Wrap(err, "initializing UserWorkload Prometheus Operator RBAC proxy secret failed")
 	}
-	apiserverConfig := manifests.NewAPIServerConfig(config)
-	d, err := t.factory.PrometheusOperatorUserWorkloadDeployment(apiserverConfig)
+
+	err = t.client.CreateOrUpdateSecret(ctx, rpc)
+	if err != nil {
+		return errors.Wrap(err, "reconciling UserWorkload Prometheus Operator RBAC proxy secret failed")
+	}
+
+	d, err := t.factory.PrometheusOperatorUserWorkloadDeployment()
 	if err != nil {
 		return errors.Wrap(err, "initializing UserWorkload Prometheus Operator Deployment failed")
 	}
@@ -132,7 +137,7 @@ func (t *PrometheusOperatorUserWorkloadTask) create(ctx context.Context) error {
 }
 
 func (t *PrometheusOperatorUserWorkloadTask) destroy(ctx context.Context) error {
-	dep, err := t.factory.PrometheusOperatorUserWorkloadDeployment(nil)
+	dep, err := t.factory.PrometheusOperatorUserWorkloadDeployment()
 	if err != nil {
 		return errors.Wrap(err, "initializing UserWorkload Prometheus Operator Deployment failed")
 	}
@@ -180,6 +185,16 @@ func (t *PrometheusOperatorUserWorkloadTask) destroy(ctx context.Context) error 
 	err = t.client.DeleteRoleBinding(ctx, arb)
 	if err != nil {
 		return errors.Wrap(err, "deleting UserWorkload Alertmanager Role Binding failed")
+	}
+
+	rpc, err := t.factory.PrometheusOperatorUserWorkloadCRBACProxySecret()
+	if err != nil {
+		return errors.Wrap(err, "initializing UserWorkload Prometheus Operator RBAC proxy secret failed")
+	}
+
+	err = t.client.DeleteSecret(ctx, rpc)
+	if err != nil {
+		return errors.Wrap(err, "deleting UserWorkload Prometheus Operator RBAC proxy secret failed")
 	}
 
 	cr, err := t.factory.PrometheusOperatorUserWorkloadClusterRole()

@@ -284,17 +284,16 @@ local inCluster =
         version: $.values.common.versions.thanos,
       },
       thanosRuler: $.values.thanos {
-        name: 'user-workload',
+        name: 'thanos-ruler',
+        crName: 'user-workload',
         namespace: $.values.common.namespaceUserWorkload,
         replicas: 2,
-        labels: {
-          'app.kubernetes.io/name': 'user-workload',
-        },
         selectorLabels: {
-          app: 'thanos-ruler',
+          'app.kubernetes.io/name': 'thanos-ruler',
           'thanos-ruler': 'user-workload',
         },
         namespaceSelector: $.values.common.userWorkloadMonitoringNamespaceSelector,
+        commonLabels+: $.values.common.commonLabels,
       },
       thanosQuerier: $.values.thanos {
         name: 'thanos-querier',
@@ -375,6 +374,7 @@ local inCluster =
   (import './utils/anti-affinity.libsonnet') +
   (import 'github.com/prometheus-operator/kube-prometheus/jsonnet/kube-prometheus/addons/ksm-lite.libsonnet') +
   (import './utils/ibm-cloud-managed-profile.libsonnet') +
+  (import './components/prometheus-adapter-audit.libsonnet') +
   {};  // Including empty object to simplify adding and removing imports during development
 
 // objects deployed in openshift-user-workload-monitoring namespace

@@ -74,6 +74,18 @@ func (t *AlertmanagerTask) create(ctx context.Context) error {
 		return errors.Wrap(err, "creating Alertmanager configuration Secret failed")
 	}
 
+	pdb, err := t.factory.AlertmanagerPodDisruptionBudget()
+	if err != nil {
+		return errors.Wrap(err, "initializing Alertmanager PodDisruptionBudget object failed")
+	}
+
+	if pdb != nil {
+		err = t.client.CreateOrUpdatePodDisruptionBudget(ctx, pdb)
+		if err != nil {
+			return errors.Wrap(err, "reconciling Alertmanager PodDisruptionBudget object failed")
+		}
+	}
+
 	rs, err := t.factory.AlertmanagerRBACProxySecret()
 	if err != nil {
 		return errors.Wrap(err, "initializing Alertmanager RBAC proxy Secret failed")
@@ -189,6 +201,14 @@ func (t *AlertmanagerTask) create(ctx context.Context) error {
 		return errors.Wrap(err, "initializing Alertmanager ServiceMonitor failed")
 	}
 
+	// Alertmanager ServiceMonitor has been renamed from alertmanager to alertmanager-${config}.
+	// This deletion ensures that the previous ServiceMonitor will be always removed after a CMO upgrade.
+	// Refer https://github.com/prometheus-operator/kube-prometheus/pull/1471 for more info.
+	t.client.DeleteServiceMonitorByNamespaceAndName(ctx, smam.Namespace, manifests.AlertmanagerLegacyServiceMonitorName)
+	if err != nil {
+		return errors.Wrap(err, "deleting legacy Alertmanager ServiceMonitor failed")
+	}
+
 	err = t.client.CreateOrUpdateServiceMonitor(ctx, smam)
 	return errors.Wrap(err, "reconciling Alertmanager ServiceMonitor failed")
 }
@@ -282,6 +302,18 @@ func (t *AlertmanagerTask) destroy(ctx context.Context) error {
 	err = t.client.DeleteService(ctx, svc)
 	if err != nil {
 		return errors.Wrap(err, "deleting Alertmanager Service failed")
+	}
+
+	pdb, err := t.factory.AlertmanagerPodDisruptionBudget()
+	if err != nil {
+		return errors.Wrap(err, "initializing Alertmanager PodDisruptionBudget object failed")
+	}
+
+	if pdb != nil {
+		err = t.client.DeletePodDisruptionBudget(ctx, pdb)
+		if err != nil {
+			return errors.Wrap(err, "deleting Alertmanager PodDisruptionBudget object failed")
+		}
 	}
 
 	{

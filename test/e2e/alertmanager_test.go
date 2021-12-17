@@ -34,7 +34,7 @@ import (
 
 func TestAlertmanagerTrustedCA(t *testing.T) {
 	var (
-		factory = manifests.NewFactory("openshift-monitoring", "", nil, nil, nil, manifests.NewAssets(assetsPath))
+		factory = manifests.NewFactory("openshift-monitoring", "", nil, nil, nil, manifests.NewAssets(assetsPath), &manifests.APIServerConfig{})
 		newCM   *v1.ConfigMap
 		lastErr error
 	)
@@ -138,10 +138,6 @@ func TestAlertmanagerKubeRbacProxy(t *testing.T) {
 					Name:  "namespace",
 					Value: testNs,
 				},
-				&framework.HeaderInjector{
-					Name:  "Content-Type",
-					Value: "application/json",
-				},
 			)
 			return nil
 		})
@@ -173,7 +169,7 @@ func TestAlertmanagerKubeRbacProxy(t *testing.T) {
 		}
 
 		if resp.StatusCode != expectedCode {
-			t.Fatalf("expecting %d status code,  got %d (%q)", expectedCode, resp.StatusCode, framework.ClampMax(b))
+			t.Fatalf("expecting %d status code, got %d (%q)", expectedCode, resp.StatusCode, framework.ClampMax(b))
 		}
 
 		return b
@@ -209,7 +205,7 @@ func TestAlertmanagerKubeRbacProxy(t *testing.T) {
 	t.Cleanup(func() {
 		resp, err := clients["editor"].Do("DELETE", fmt.Sprintf("/api/v2/silence/%s", silID), sil)
 		if err != nil || resp.Status != "200" {
-			t.Logf("failed to delete silence HTTP: %q err: %q", resp.Status, err)
+			t.Logf("failed to delete silence HTTP: %q err: %v", resp.Status, err)
 		}
 	})
 
@@ -299,10 +295,108 @@ func TestAlertmanagerKubeRbacProxy(t *testing.T) {
 	)
 }
 
+// Even when no persistent storage is configured, silences (and notifications)
+// shouldn't be lost when new Alertmanager pods are rolled out.
+func TestAlertmanagerDataReplication(t *testing.T) {
+	const (
+		silenceLabelName  = "test"
+		silenceLabelValue = "AlertmanagerReplication"
+	)
+
+	// Create a silence.
+	now := time.Now()
+	sil := []byte(fmt.Sprintf(
+		`{"matchers":[{"name":"%s","value":"%s","isRegex":false}],"startsAt":"%s","endsAt":"%s","createdBy":"somebody","comment":"some comment"}`,
+		silenceLabelName,
+		silenceLabelValue,
+		now.Format(time.RFC3339),
+		now.Add(time.Hour).Format(time.RFC3339),
+	))
+	err := framework.Poll(5*time.Second, time.Minute, func() error {
+		resp, err := f.AlertmanagerClient.Do("POST", "/api/v2/silences", sil)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		b, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			return errors.Wrap(err, "fail to read response body")
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("expecting 200 status code, got %d (%q)", resp.StatusCode, framework.ClampMax(b))
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Trigger a rollout of the Alertmanager pods by changing the log level.
+	const (
+		statefulSetName = "alertmanager-main"
+		containerName   = "alertmanager"
+	)
+
+	data := fmt.Sprintf(`alertmanagerMain:
+  logLevel: warn
+`)
+	f.MustCreateOrUpdateConfigMap(t, configMapWithData(t, data))
+
+	for _, test := range []scenario{
+		{
+			name:      "test the alertmanager-main statefulset is rolled out",
+			assertion: f.AssertStatefulSetExistsAndRollout(statefulSetName, f.Ns),
+		},
+		{
+			name: "assert pod configuration is as expected",
+			assertion: f.AssertPodConfiguration(
+				f.Ns,
+				"app.kubernetes.io/name=alertmanager,app.kubernetes.io/instance=main",
+				[]framework.PodAssertion{
+					expectContainerArg("--log.level=warn", containerName),
+				},
+			),
+		},
+	} {
+		t.Run(test.name, test.assertion)
+	}
+
+	// Ensure that the silence has been preserved.
+	err = framework.Poll(5*time.Second, time.Minute, func() error {
+		body, err := f.AlertmanagerClient.GetAlertmanagerSilences(
+			"filter", fmt.Sprintf(`%s="%s"`, silenceLabelName, silenceLabelValue),
+		)
+		if err != nil {
+			return errors.Wrap(err, "error getting silences from Alertmanager")
+		}
+		res, err := gabs.ParseJSON(body)
+		if err != nil {
+			return errors.Wrapf(err, "error parsing Alertmanager response: %s", string(body))
+		}
+
+		count, err := res.ArrayCount()
+		if err != nil {
+			return errors.Wrap(err, "error getting count of items")
+		}
+
+		if count == 1 {
+			return nil
+		}
+
+		return fmt.Errorf("expected 1 matching silence, got %d", count)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // The Alertmanager API should be protected by the OAuth proxy.
 func TestAlertmanagerOAuthProxy(t *testing.T) {
 	err := framework.Poll(5*time.Second, 5*time.Minute, func() error {
-		body, err := f.AlertmanagerClient.AlertmanagerQueryAlerts(
+		body, err := f.AlertmanagerClient.GetAlertmanagerAlerts(
 			"filter", `alertname="Watchdog"`,
 			"active", "true",
 		)
@@ -368,7 +462,8 @@ func TestAlertmanagerDisabling(t *testing.T) {
 		{name: "assert clusterrolebinding alertmanager-main does not exist", assertion: f.AssertClusterRoleBindingDoesNotExist("alertmanager-main")},
 		{name: "assert trusted-ca-bundle does not exist", assertion: f.AssertConfigmapDoesNotExist("alertmanager-trusted-ca-bundle", f.Ns)},
 		{name: "assert prometheus rule does not exist", assertion: f.AssertPrometheusRuleDoesNotExist("alertmanager-main-rules", f.Ns)},
-		{name: "assert service monitor does not exist", assertion: f.AssertServiceMonitorDoesNotExist("alertmanager", f.Ns)},
+		{name: "assert service monitor does not exist", assertion: f.AssertServiceMonitorDoesNotExist("alertmanager-main", f.Ns)},
+		{name: "assert old service monitor does not exists", assertion: f.AssertServiceMonitorDoesNotExist("alertmanager", f.Ns)},
 		{name: "alertmanager public URL is unset", assertion: f.AssertValueInConfigMapEquals(
 			"monitoring-shared-config", "openshift-config-managed", "alertmanagerPublicURL", "")},
 		{name: "assert operator not degraded", assertion: f.AssertOperatorCondition(statusv1.OperatorDegraded, statusv1.ConditionFalse)},
@@ -402,7 +497,8 @@ func TestAlertmanagerDisabling(t *testing.T) {
 		{name: "assert clusterrolebinding alertmanager-main exists", assertion: f.AssertClusterRoleBindingExists("alertmanager-main")},
 		{name: "assert trusted-ca-bundle exists", assertion: f.AssertConfigmapExists("alertmanager-trusted-ca-bundle", f.Ns)},
 		{name: "assert prometheus rule exists", assertion: f.AssertPrometheusRuleExists("alertmanager-main-rules", f.Ns)},
-		{name: "assert service monitor exists", assertion: f.AssertServiceMonitorExists("alertmanager", f.Ns)},
+		{name: "assert service monitor exists", assertion: f.AssertServiceMonitorExists("alertmanager-main", f.Ns)},
+		{name: "assert old service monitor does not exists", assertion: f.AssertServiceMonitorDoesNotExist("alertmanager", f.Ns)},
 		{name: "alertmanager public URL properly set", assertion: f.AssertValueInConfigMapNotEquals(
 			"monitoring-shared-config", "openshift-config-managed", "alertmanagerPublicURL", "")},
 		{name: "assert operator not degraded", assertion: f.AssertOperatorCondition(statusv1.OperatorDegraded, statusv1.ConditionFalse)},

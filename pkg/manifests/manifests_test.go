@@ -15,13 +15,15 @@
 package manifests
 
 import (
+	"errors"
 	"fmt"
-	"github.com/openshift/library-go/pkg/crypto"
 	"net/url"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/openshift/library-go/pkg/crypto"
 
 	v1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -131,7 +133,7 @@ func TestHashSecret(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", NewDefaultConfig(), defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+			f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", NewDefaultConfig(), defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 			s, err := f.HashSecret(tt.given, tt.data...)
 			if got := err != nil; got != tt.errExpected {
 				t.Errorf("expected error %t, got %t, err %v", tt.errExpected, got, err)
@@ -146,7 +148,7 @@ func TestHashSecret(t *testing.T) {
 }
 
 func TestUnconfiguredManifests(t *testing.T) {
-	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", NewDefaultConfig(), defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", NewDefaultConfig(), defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 	_, err := f.AlertmanagerConfig()
 	if err != nil {
 		t.Fatal(err)
@@ -571,7 +573,7 @@ func TestUnconfiguredManifests(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = f.PrometheusOperatorDeployment(nil)
+	_, err = f.PrometheusOperatorDeployment()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -706,6 +708,11 @@ func TestUnconfiguredManifests(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	_, err = f.PrometheusOperatorUserWorkloadCRBACProxySecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	_, err = f.NodeExporterRBACProxySecret()
 	if err != nil {
 		t.Fatal(err)
@@ -715,10 +722,15 @@ func TestUnconfiguredManifests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	_, err = f.PrometheusOperatorRBACProxySecret()
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestSharingConfig(t *testing.T) {
-	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", NewDefaultConfig(), defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", NewDefaultConfig(), defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 	u, err := url.Parse("http://example.com/")
 	if err != nil {
 		t.Fatal(err)
@@ -748,14 +760,15 @@ func TestPrometheusOperatorConfiguration(t *testing.T) {
 		"prometheus-operator":        "docker.io/openshift/origin-prometheus-operator:latest",
 		"prometheus-config-reloader": "docker.io/openshift/origin-prometheus-config-reloader:latest",
 		"configmap-reloader":         "docker.io/openshift/origin-configmap-reloader:latest",
+		"kube-rbac-proxy":            "docker.io/openshift/origin-kube-rbac-proxy:latest",
 	})
 
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
-	d, err := f.PrometheusOperatorDeployment(nil)
+	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
+	d, err := f.PrometheusOperatorDeployment()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -768,26 +781,29 @@ func TestPrometheusOperatorConfiguration(t *testing.T) {
 		t.Fatalf("expected node selector to be master, got %q", got)
 	}
 
-	expectedPromOpImage := "docker.io/openshift/origin-prometheus-operator:latest"
-	resPromOpImage := d.Spec.Template.Spec.Containers[0].Image
-	if resPromOpImage != expectedPromOpImage {
-		t.Fatalf("Configuring the Prometheus Operator image failed, expected: %v, got %v", expectedPromOpImage, resPromOpImage)
-	}
-
 	prometheusReloaderFound := false
 	prometheusWebTLSCipherSuitesArg := ""
 	prometheusWebTLSVersionArg := ""
-	for i := range d.Spec.Template.Spec.Containers[0].Args {
-		if strings.HasPrefix(d.Spec.Template.Spec.Containers[0].Args[i], PrometheusConfigReloaderFlag+"docker.io/openshift/origin-prometheus-config-reloader:latest") {
-			prometheusReloaderFound = true
-		}
+	kubeRbacProxyTLSCipherSuitesArg := ""
+	kubeRbacProxyMinTLSVersionArg := ""
+	for _, container := range d.Spec.Template.Spec.Containers {
+		switch container.Name {
+		case "prometheus-operator":
+			if container.Image != "docker.io/openshift/origin-prometheus-operator:latest" {
+				t.Fatalf("%s image incorrectly configured", container.Name)
+			}
 
-		if strings.HasPrefix(d.Spec.Template.Spec.Containers[0].Args[i], PrometheusOperatorWebTLSCipherSuitesFlag) {
-			prometheusWebTLSCipherSuitesArg = d.Spec.Template.Spec.Containers[0].Args[i]
-		}
-
-		if strings.HasPrefix(d.Spec.Template.Spec.Containers[0].Args[i], PrometheusOperatorWebTLSMinTLSVersionFlag) {
-			prometheusWebTLSVersionArg = d.Spec.Template.Spec.Containers[0].Args[i]
+			if getContainerArgValue(d.Spec.Template.Spec.Containers, PrometheusConfigReloaderFlag+"docker.io/openshift/origin-prometheus-config-reloader:latest", container.Name) != "" {
+				prometheusReloaderFound = true
+			}
+			prometheusWebTLSCipherSuitesArg = getContainerArgValue(d.Spec.Template.Spec.Containers, PrometheusOperatorWebTLSCipherSuitesFlag, container.Name)
+			prometheusWebTLSVersionArg = getContainerArgValue(d.Spec.Template.Spec.Containers, PrometheusOperatorWebTLSMinTLSVersionFlag, container.Name)
+		case "kube-rbac-proxy":
+			if container.Image != "docker.io/openshift/origin-kube-rbac-proxy:latest" {
+				t.Fatalf("%s image incorrectly configured", container.Name)
+			}
+			kubeRbacProxyTLSCipherSuitesArg = getContainerArgValue(d.Spec.Template.Spec.Containers, KubeRbacProxyTLSCipherSuitesFlag, container.Name)
+			kubeRbacProxyMinTLSVersionArg = getContainerArgValue(d.Spec.Template.Spec.Containers, KubeRbacProxyMinTLSVersionFlag, container.Name)
 		}
 	}
 
@@ -808,7 +824,21 @@ func TestPrometheusOperatorConfiguration(t *testing.T) {
 		t.Fatalf("incorrect TLS version \n got %s, \nwant %s", prometheusWebTLSVersionArg, expectedPrometheusWebTLSVersionArg)
 	}
 
-	d2, err := f.PrometheusOperatorDeployment(nil)
+	expectedKubeRbacProxyTLSCipherSuitesArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyTLSCipherSuitesFlag,
+		strings.Join(crypto.OpenSSLToIANACipherSuites(APIServerDefaultTLSCiphers), ","))
+
+	if expectedKubeRbacProxyTLSCipherSuitesArg != kubeRbacProxyTLSCipherSuitesArg {
+		t.Fatalf("incorrect TLS ciphers, \n got %s, \nwant %s", kubeRbacProxyTLSCipherSuitesArg, expectedKubeRbacProxyTLSCipherSuitesArg)
+	}
+
+	expectedKubeRbacProxyMinTLSVersionArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyMinTLSVersionFlag, APIServerDefaultMinTLSVersion)
+	if expectedKubeRbacProxyMinTLSVersionArg != kubeRbacProxyMinTLSVersionArg {
+		t.Fatalf("incorrect TLS version \n got %s, \nwant %s", kubeRbacProxyMinTLSVersionArg, expectedKubeRbacProxyMinTLSVersionArg)
+	}
+
+	d2, err := f.PrometheusOperatorDeployment()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -816,6 +846,19 @@ func TestPrometheusOperatorConfiguration(t *testing.T) {
 	if !reflect.DeepEqual(d, d2) {
 		t.Fatal("expected PrometheusOperatorDeployment to be an idempotent function")
 	}
+}
+
+func getContainerArgValue(containers []v1.Container, argFlag string, containerName string) string {
+	for _, container := range containers {
+		if container.Name == containerName {
+			for _, arg := range container.Args {
+				if strings.HasPrefix(arg, argFlag) {
+					return arg
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func TestPrometheusK8sRemoteWrite(t *testing.T) {
@@ -944,7 +987,7 @@ func TestPrometheusK8sRemoteWrite(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := tc.config()
 
-			f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+			f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 			p, err := f.PrometheusK8s(
 				"prometheus-k8s.openshift-monitoring.svc",
 				&v1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "foo"}},
@@ -992,6 +1035,7 @@ func TestPrometheusK8sConfiguration(t *testing.T) {
     datacenter: eu-west
   remoteWrite:
   - url: "https://test.remotewrite.com/api/write"
+  queryLogFile: /tmp/test
 ingress:
   baseAddress: monitoring-demo.staging.core-os.net
 `)
@@ -1006,7 +1050,7 @@ ingress:
 		"prom-label-proxy": "docker.io/openshift/origin-prom-label-proxy:latest",
 	})
 
-	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 	p, err := f.PrometheusK8s(
 		"prometheus-k8s.openshift-monitoring.svc",
 		&v1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "foo"}},
@@ -1024,21 +1068,35 @@ ingress:
 		t.Fatal("Prometheus image is not configured correctly")
 	}
 
+	kubeRbacProxyTLSCipherSuitesArg := ""
+	kubeRbacProxyMinTLSVersionArg := ""
 	for _, container := range p.Spec.Containers {
-		if container.Name == "prometheus-proxy" && container.Image != "docker.io/openshift/origin-oauth-proxy:latest" {
-			t.Fatalf("image for %s is not configured correctly: %s", container.Name, container.Image)
-		}
+		switch container.Name {
+		case "prometheus-proxy":
+			if container.Image != "docker.io/openshift/origin-oauth-proxy:latest" {
+				t.Fatalf("image for %s is not configured correctly: %s", container.Name, container.Image)
+			}
+			volumeName := "prometheus-trusted-ca-bundle"
+			if !trustedCABundleVolumeConfigured(p.Spec.Volumes, volumeName) {
+				t.Fatalf("trusted CA bundle volume for %s is not configured correctly", container.Name)
+			}
+			if !trustedCABundleVolumeMountsConfigured(container.VolumeMounts, volumeName) {
+				t.Fatalf("trusted CA bundle volume mount for %s is not configured correctly", container.Name)
+			}
 
-		if container.Name == "kube-rbac-proxy" && container.Image != "docker.io/openshift/origin-kube-rbac-proxy:latest" {
-			t.Fatalf("image for %s is not configured correctly: %s", container.Name, container.Image)
-		}
+		case "kube-rbac-proxy":
+			if container.Image != "docker.io/openshift/origin-kube-rbac-proxy:latest" {
+				t.Fatalf("image for %s is not configured correctly: %s", container.Name, container.Image)
+			}
+			kubeRbacProxyTLSCipherSuitesArg = getContainerArgValue(p.Spec.Containers, KubeRbacProxyTLSCipherSuitesFlag, container.Name)
+			kubeRbacProxyMinTLSVersionArg = getContainerArgValue(p.Spec.Containers, KubeRbacProxyMinTLSVersionFlag, container.Name)
 
-		if container.Name == "prom-label-proxy" && container.Image != "docker.io/openshift/origin-prom-label-proxy:latest" {
-			t.Fatalf("image for %s is not configured correctly: %s", container.Name, container.Image)
-		}
-
-		volumeName := "prometheus-trusted-ca-bundle"
-		if container.Name == "prometheus-proxy" || container.Name == "prometheus" {
+		case "prom-label-proxy":
+			if container.Image != "docker.io/openshift/origin-prom-label-proxy:latest" {
+				t.Fatalf("image for %s is not configured correctly: %s", container.Name, container.Image)
+			}
+		case "prometheus":
+			volumeName := "prometheus-trusted-ca-bundle"
 			if !trustedCABundleVolumeConfigured(p.Spec.Volumes, volumeName) {
 				t.Fatalf("trusted CA bundle volume for %s is not configured correctly", container.Name)
 			}
@@ -1046,6 +1104,20 @@ ingress:
 				t.Fatalf("trusted CA bundle volume mount for %s is not configured correctly", container.Name)
 			}
 		}
+	}
+
+	expectedKubeRbacProxyTLSCipherSuitesArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyTLSCipherSuitesFlag,
+		strings.Join(crypto.OpenSSLToIANACipherSuites(APIServerDefaultTLSCiphers), ","))
+
+	if expectedKubeRbacProxyTLSCipherSuitesArg != kubeRbacProxyTLSCipherSuitesArg {
+		t.Fatalf("incorrect TLS ciphers, \n got %s, \nwant %s", kubeRbacProxyTLSCipherSuitesArg, expectedKubeRbacProxyTLSCipherSuitesArg)
+	}
+
+	expectedKubeRbacProxyMinTLSVersionArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyMinTLSVersionFlag, APIServerDefaultMinTLSVersion)
+	if expectedKubeRbacProxyMinTLSVersionArg != kubeRbacProxyMinTLSVersionArg {
+		t.Fatalf("incorrect TLS version \n got %s, \nwant %s", kubeRbacProxyMinTLSVersionArg, expectedKubeRbacProxyMinTLSVersionArg)
 	}
 
 	cpuLimit := p.Spec.Resources.Limits[v1.ResourceCPU]
@@ -1096,6 +1168,10 @@ ingress:
 
 	if p.Spec.RemoteWrite[0].URL != "https://test.remotewrite.com/api/write" {
 		t.Fatal("Prometheus remote-write is not configured correctly")
+	}
+
+	if p.Spec.QueryLogFile != "/tmp/test" {
+		t.Fatal("Prometheus query log is not configured correctly")
 	}
 }
 
@@ -1289,7 +1365,7 @@ func TestPrometheusK8sAdditionalAlertManagerConfigsSecret(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+			f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 
 			p, err := f.PrometheusK8s(
 				"prometheus-k8s.openshift-monitoring.svc",
@@ -1590,7 +1666,7 @@ alertmanagerMain:
 				t.Fatal(err)
 			}
 			c.UserWorkloadConfiguration = uwc
-			f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+			f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 
 			s, err := f.ThanosRulerAlertmanagerConfigSecret()
 			if err != nil {
@@ -1612,6 +1688,122 @@ alertmanagerMain:
 	}
 }
 
+func TestK8sPrometheusAdapterAuditLog(t *testing.T) {
+	argsForProfile := func(profile string) []string {
+		return []string{
+			fmt.Sprintf("--audit-policy-file=/etc/audit/%s-profile.yaml", profile),
+			"--audit-log-path=/var/log/adapter/audit.log",
+			"--audit-log-maxsize=100",
+			"--audit-log-maxbackup=5",
+			"--audit-log-compress=true",
+		}
+	}
+
+	tt := []struct {
+		scenario string
+		config   string
+		args     []string
+		err      error
+	}{{
+		scenario: "no config",
+		config:   ``,
+		args:     argsForProfile("metadata"),
+	}, {
+		scenario: "no adapter config",
+		config:   `k8sPrometheusAdapter: `,
+		args:     argsForProfile("metadata"),
+	}, {
+		scenario: "no audit config",
+		config: `
+k8sPrometheusAdapter:
+  audit: {} `,
+		args: argsForProfile("metadata"),
+	}, {
+		scenario: "Request",
+		config: `
+k8sPrometheusAdapter:
+  audit:
+    profile: Request
+`,
+		args: argsForProfile("request"),
+	}, {
+		scenario: "RequestResponse",
+		config: `
+k8sPrometheusAdapter:
+  audit:
+    profile: RequestResponse
+`,
+		args: argsForProfile("requestresponse"),
+	}, {
+		scenario: "None",
+		config: `
+  k8sPrometheusAdapter:
+    audit:
+     profile: None
+`,
+		args: argsForProfile("none"),
+	}, {
+		scenario: "no audit config",
+		config: `
+  k8sPrometheusAdapter:
+    audit:
+      profile: Foobar  # should generate an error
+`,
+		err: ErrConfigValidation,
+	}}
+
+	for _, test := range tt {
+		t.Run(test.scenario, func(t *testing.T) {
+			c, err := NewConfigFromString(test.config)
+			if err != nil {
+				t.Logf("%s\n\n", test.config)
+				t.Fatal(err)
+			}
+
+			f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring",
+				c, defaultInfrastructureReader(), &fakeProxyReader{},
+				NewAssets(assetsPath), &APIServerConfig{})
+
+			d, err := f.PrometheusAdapterDeployment("foo", map[string]string{
+				"requestheader-allowed-names":        "",
+				"requestheader-extra-headers-prefix": "",
+				"requestheader-group-headers":        "",
+				"requestheader-username-headers":     "",
+			})
+
+			if test.err != nil || err != nil {
+				// fail only if the error isn't what is expected
+				if !errors.Is(err, test.err) {
+					t.Fatalf("Expected error %q but got %q", test.err, err)
+				}
+				return
+			}
+
+			adapterArgs := d.Spec.Template.Spec.Containers[0].Args
+			auditArgs := []string{}
+			for _, arg := range adapterArgs {
+				if strings.HasPrefix(arg, "--audit-") {
+					auditArgs = append(auditArgs, arg)
+				}
+			}
+			assertDeepEqual(t, test.args, auditArgs,
+				"k8s-prometheus-adapter audit is not configured correctly")
+		})
+	}
+}
+
+func assertDeepEqual(t *testing.T, expected, got interface{}, msg string) {
+	if !reflect.DeepEqual(expected, got) {
+		t.Fatalf(`%s
+got:
+	%#+v
+
+expected:
+	%#+v
+	`, msg, got, expected)
+	}
+}
+
 func TestK8sPrometheusAdapterConfiguration(t *testing.T) {
 	c, err := NewConfigFromString(`
 k8sPrometheusAdapter:
@@ -1625,7 +1817,7 @@ k8sPrometheusAdapter:
 		"k8s-prometheus-adapter": "docker.io/openshift/origin-k8s-prometheus-adapter:latest",
 	})
 
-	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 	d, err := f.PrometheusAdapterDeployment("foo", map[string]string{
 		"requestheader-allowed-names":        "",
 		"requestheader-extra-headers-prefix": "",
@@ -1642,6 +1834,76 @@ k8sPrometheusAdapter:
 	expected := map[string]string{"test": "value"}
 	if !reflect.DeepEqual(d.Spec.Template.Spec.NodeSelector, expected) {
 		t.Fatalf("k8s-prometheus-adapter nodeSelector is not configured correctly\n\ngot:\n\n%#+v\n\nexpected:\n\n%#+v\n", d.Spec.Template.Spec.NodeSelector, expected)
+	}
+}
+
+func TestAlertmanagerMainStartupProbe(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		config              string
+		infrastructure      InfrastructureReader
+		startupProbeDefined bool
+	}{
+		{
+			name:                "without persistent storage",
+			config:              `alertmanagerMain: {}`,
+			infrastructure:      defaultInfrastructureReader(),
+			startupProbeDefined: true,
+		},
+		{
+			name:                "without persistent storage and single node",
+			config:              `alertmanagerMain: {}`,
+			infrastructure:      &fakeInfrastructureReader{highlyAvailableInfrastructure: false, hostedControlPlane: false},
+			startupProbeDefined: false,
+		},
+		{
+			name: "with persistent storage",
+			config: `alertmanagerMain:
+  volumeClaimTemplate:
+    spec:
+      resources:
+        requests:
+          storage: 10Gi
+`,
+			infrastructure:      defaultInfrastructureReader(),
+			startupProbeDefined: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := NewConfigFromString(tc.config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, tc.infrastructure, &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
+			a, err := f.AlertmanagerMain(
+				"alertmanager-main.openshift-monitoring.svc",
+				&v1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "foo"}},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			for _, container := range a.Spec.Containers {
+				switch container.Name {
+				case "alertmanager":
+					if container.StartupProbe != nil {
+						if !tc.startupProbeDefined {
+							t.Fatal("Alertmanager container not configured correctly, expected no startupProbe, but found", container.StartupProbe.String())
+						}
+						return
+					}
+
+					if tc.startupProbeDefined {
+						t.Fatal("Alertmanager container not configured correctly, expected startupProbe, but found none")
+					}
+					return
+				}
+			}
+
+			if tc.startupProbeDefined {
+				t.Fatal("Alertmanager container not found")
+			}
+		})
 	}
 }
 
@@ -1676,7 +1938,7 @@ ingress:
 		"alertmanager": "docker.io/openshift/origin-prometheus-alertmanager:latest",
 	})
 
-	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 	a, err := f.AlertmanagerMain(
 		"alertmanager-main.openshift-monitoring.svc",
 		&v1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "foo"}},
@@ -1731,16 +1993,36 @@ ingress:
 		t.Fatal("Alertmanager volumeClaimTemplate not configured correctly, expected 10Gi storage request, but found", storageRequestPtr.String())
 	}
 
+	kubeRbacProxyTLSCipherSuitesArg := ""
+	kubeRbacProxyMinTLSVersionArg := ""
 	for _, container := range a.Spec.Containers {
 		volumeName := "alertmanager-trusted-ca-bundle"
-		if container.Name == "prometheus-proxy" || container.Name == "prometheus" {
+		switch container.Name {
+		case "prometheus-proxy", "prometheus":
 			if !trustedCABundleVolumeConfigured(a.Spec.Volumes, volumeName) {
 				t.Fatalf("trusted CA bundle volume for %s is not configured correctly", container.Name)
 			}
 			if !trustedCABundleVolumeMountsConfigured(container.VolumeMounts, volumeName) {
 				t.Fatalf("trusted CA bundle volume mount for %s is not configured correctly", container.Name)
 			}
+		case "kube-rbac-proxy", "kube-rbac-proxy-metric":
+			kubeRbacProxyTLSCipherSuitesArg = getContainerArgValue(a.Spec.Containers, KubeRbacProxyTLSCipherSuitesFlag, container.Name)
+			kubeRbacProxyMinTLSVersionArg = getContainerArgValue(a.Spec.Containers, KubeRbacProxyMinTLSVersionFlag, container.Name)
 		}
+	}
+
+	expectedKubeRbacProxyTLSCipherSuitesArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyTLSCipherSuitesFlag,
+		strings.Join(crypto.OpenSSLToIANACipherSuites(APIServerDefaultTLSCiphers), ","))
+
+	if expectedKubeRbacProxyTLSCipherSuitesArg != kubeRbacProxyTLSCipherSuitesArg {
+		t.Fatalf("incorrect TLS ciphers, \n got %s, \nwant %s", kubeRbacProxyTLSCipherSuitesArg, expectedKubeRbacProxyTLSCipherSuitesArg)
+	}
+
+	expectedKubeRbacProxyMinTLSVersionArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyMinTLSVersionFlag, APIServerDefaultMinTLSVersion)
+	if expectedKubeRbacProxyMinTLSVersionArg != kubeRbacProxyMinTLSVersionArg {
+		t.Fatalf("incorrect TLS version \n got %s, \nwant %s", kubeRbacProxyMinTLSVersionArg, expectedKubeRbacProxyMinTLSVersionArg)
 	}
 }
 
@@ -1754,17 +2036,52 @@ func TestNodeExporter(t *testing.T) {
 		"kube-rbac-proxy": "docker.io/openshift/origin-kube-rbac-proxy:latest",
 	})
 
-	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 
 	ds, err := f.NodeExporterDaemonSet()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ds.Spec.Template.Spec.Containers[0].Image != "docker.io/openshift/origin-prometheus-node-exporter:latest" {
-		t.Fatalf("image for node-exporter daemonset is wrong: %s", ds.Spec.Template.Spec.Containers[0].Image)
+
+	kubeRbacProxyTLSCipherSuitesArg := ""
+	kubeRbacProxyMinTLSVersionArg := ""
+
+	for _, container := range ds.Spec.Template.Spec.Containers {
+		switch container.Name {
+		case "node-exporter":
+			if container.Image != "docker.io/openshift/origin-prometheus-node-exporter:latest" {
+				t.Fatalf("image for node-exporter daemonset is wrong: %s", container.Name)
+			}
+		case "kube-rbac-proxy":
+			if container.Image != "docker.io/openshift/origin-kube-rbac-proxy:latest" {
+				t.Fatalf("image for kube-rbac-proxy in node-exporter daemonset is wrong: %s", container.Name)
+			}
+			kubeRbacProxyTLSCipherSuitesArg = getContainerArgValue(ds.Spec.Template.Spec.Containers, KubeRbacProxyTLSCipherSuitesFlag, container.Name)
+			kubeRbacProxyMinTLSVersionArg = getContainerArgValue(ds.Spec.Template.Spec.Containers, KubeRbacProxyMinTLSVersionFlag, container.Name)
+		}
 	}
-	if ds.Spec.Template.Spec.Containers[1].Image != "docker.io/openshift/origin-kube-rbac-proxy:latest" {
-		t.Fatalf("image for kube-rbac-proxy in node-exporter daemonset is wrong: %s", ds.Spec.Template.Spec.Containers[1].Image)
+
+	expectedKubeRbacProxyTLSCipherSuitesArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyTLSCipherSuitesFlag,
+		strings.Join(crypto.OpenSSLToIANACipherSuites(APIServerDefaultTLSCiphers), ","))
+
+	if expectedKubeRbacProxyTLSCipherSuitesArg != kubeRbacProxyTLSCipherSuitesArg {
+		t.Fatalf("incorrect TLS ciphers, \n got %s, \nwant %s", kubeRbacProxyTLSCipherSuitesArg, expectedKubeRbacProxyTLSCipherSuitesArg)
+	}
+
+	expectedKubeRbacProxyMinTLSVersionArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyMinTLSVersionFlag, APIServerDefaultMinTLSVersion)
+	if expectedKubeRbacProxyMinTLSVersionArg != kubeRbacProxyMinTLSVersionArg {
+		t.Fatalf("incorrect TLS version \n got %s, \nwant %s", kubeRbacProxyMinTLSVersionArg, expectedKubeRbacProxyMinTLSVersionArg)
+	}
+
+	ds2, err := f.NodeExporterDaemonSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(ds, ds2) {
+		t.Fatal("expected NodeExporterDaemonSet to be an idempotent function")
 	}
 }
 
@@ -1778,24 +2095,52 @@ func TestKubeStateMetrics(t *testing.T) {
 		"kube-rbac-proxy":    "docker.io/openshift/origin-kube-rbac-proxy:latest",
 	})
 
-	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 
 	d, err := f.KubeStateMetricsDeployment()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	for i, container := range d.Spec.Template.Spec.Containers {
-		if container.Name == "kube-state-metrics" {
-			if d.Spec.Template.Spec.Containers[i].Image != "docker.io/openshift/origin-kube-state-metrics:latest" {
+	kubeRbacProxyTLSCipherSuitesArg := ""
+	kubeRbacProxyMinTLSVersionArg := ""
+	for _, container := range d.Spec.Template.Spec.Containers {
+		switch container.Name {
+		case "kube-state-metrics":
+			if container.Image != "docker.io/openshift/origin-kube-state-metrics:latest" {
 				t.Fatal("kube-state-metrics image incorrectly configured")
 			}
-		}
-		if container.Name == "kube-rbac-proxy-self" || container.Name == "kube-rbac-proxy-main" {
-			if d.Spec.Template.Spec.Containers[i].Image != "docker.io/openshift/origin-kube-rbac-proxy:latest" {
+		case "kube-rbac-proxy-self", "kube-rbac-proxy-main":
+			if container.Image != "docker.io/openshift/origin-kube-rbac-proxy:latest" {
 				t.Fatalf("%s image incorrectly configured", container.Name)
 			}
+
+			kubeRbacProxyTLSCipherSuitesArg = getContainerArgValue(d.Spec.Template.Spec.Containers, KubeRbacProxyTLSCipherSuitesFlag, container.Name)
+			kubeRbacProxyMinTLSVersionArg = getContainerArgValue(d.Spec.Template.Spec.Containers, KubeRbacProxyMinTLSVersionFlag, container.Name)
 		}
+	}
+
+	expectedKubeRbacProxyTLSCipherSuitesArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyTLSCipherSuitesFlag,
+		strings.Join(crypto.OpenSSLToIANACipherSuites(APIServerDefaultTLSCiphers), ","))
+
+	if expectedKubeRbacProxyTLSCipherSuitesArg != kubeRbacProxyTLSCipherSuitesArg {
+		t.Fatalf("incorrect TLS ciphers, \n got %s, \nwant %s", kubeRbacProxyTLSCipherSuitesArg, expectedKubeRbacProxyTLSCipherSuitesArg)
+	}
+
+	expectedKubeRbacProxyMinTLSVersionArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyMinTLSVersionFlag, APIServerDefaultMinTLSVersion)
+	if expectedKubeRbacProxyMinTLSVersionArg != kubeRbacProxyMinTLSVersionArg {
+		t.Fatalf("incorrect TLS version \n got %s, \nwant %s", kubeRbacProxyMinTLSVersionArg, expectedKubeRbacProxyMinTLSVersionArg)
+	}
+
+	d2, err := f.KubeStateMetricsDeployment()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(d, d2) {
+		t.Fatal("expected KubeStateMetricsDeployment to be an idempotent function")
 	}
 }
 
@@ -1809,22 +2154,54 @@ func TestOpenShiftStateMetrics(t *testing.T) {
 		"kube-rbac-proxy":         "docker.io/openshift/origin-kube-rbac-proxy:latest",
 	})
 
-	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 
 	d, err := f.OpenShiftStateMetricsDeployment()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if d.Spec.Template.Spec.Containers[0].Image != "docker.io/openshift/origin-kube-rbac-proxy:latest" {
-		t.Fatal("kube-rbac-proxy image incorrectly configured")
+	kubeRbacProxyTLSCipherSuitesArg := ""
+	kubeRbacProxyMinTLSVersionArg := ""
+	for _, container := range d.Spec.Template.Spec.Containers {
+		switch container.Name {
+		case "openshift-state-metrics":
+			if container.Image != "docker.io/openshift/origin-openshift-state-metrics:latest" {
+				t.Fatal("openshift-state-metrics image incorrectly configured")
+			}
+
+		case "kube-rbac-proxy-self", "kube-rbac-proxy-main":
+			if container.Image != "docker.io/openshift/origin-kube-rbac-proxy:latest" {
+				t.Fatal("kube-rbac-proxy image incorrectly configured")
+			}
+			kubeRbacProxyTLSCipherSuitesArg = getContainerArgValue(d.Spec.Template.Spec.Containers, KubeRbacProxyTLSCipherSuitesFlag, container.Name)
+			kubeRbacProxyMinTLSVersionArg = getContainerArgValue(d.Spec.Template.Spec.Containers, KubeRbacProxyMinTLSVersionFlag, container.Name)
+		}
 	}
-	if d.Spec.Template.Spec.Containers[1].Image != "docker.io/openshift/origin-kube-rbac-proxy:latest" {
-		t.Fatal("kube-rbac-proxy image incorrectly configured")
+
+	expectedKubeRbacProxyTLSCipherSuitesArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyTLSCipherSuitesFlag,
+		strings.Join(crypto.OpenSSLToIANACipherSuites(APIServerDefaultTLSCiphers), ","))
+
+	if expectedKubeRbacProxyTLSCipherSuitesArg != kubeRbacProxyTLSCipherSuitesArg {
+		t.Fatalf("incorrect TLS ciphers, \n got %s, \nwant %s", kubeRbacProxyTLSCipherSuitesArg, expectedKubeRbacProxyTLSCipherSuitesArg)
 	}
-	if d.Spec.Template.Spec.Containers[2].Image != "docker.io/openshift/origin-openshift-state-metrics:latest" {
-		t.Fatal("openshift-state-metrics image incorrectly configured")
+
+	expectedKubeRbacProxyMinTLSVersionArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyMinTLSVersionFlag, APIServerDefaultMinTLSVersion)
+	if expectedKubeRbacProxyMinTLSVersionArg != kubeRbacProxyMinTLSVersionArg {
+		t.Fatalf("incorrect TLS version \n got %s, \nwant %s", kubeRbacProxyMinTLSVersionArg, expectedKubeRbacProxyMinTLSVersionArg)
 	}
+
+	d2, err := f.OpenShiftStateMetricsDeployment()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(d, d2) {
+		t.Fatal("expected OpenShiftStateMetricsDeployment to be an idempotent function")
+	}
+
 }
 
 func TestPrometheusK8sControlPlaneRulesFiltered(t *testing.T) {
@@ -1854,7 +2231,7 @@ func TestPrometheusK8sControlPlaneRulesFiltered(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", NewDefaultConfig(), tc.infrastructure, &fakeProxyReader{}, NewAssets(assetsPath))
+		f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", NewDefaultConfig(), tc.infrastructure, &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 		r, err := f.ControlPlanePrometheusRule()
 		if err != nil {
 			t.Fatal(err)
@@ -1874,7 +2251,7 @@ func TestEtcdGrafanaDashboardFiltered(t *testing.T) {
 	enabled := false
 	c := NewDefaultConfig()
 	c.ClusterMonitoringConfiguration.EtcdConfig.Enabled = &enabled
-	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 
 	cms, err := f.GrafanaDashboardDefinitions()
 	if err != nil {
@@ -1892,7 +2269,7 @@ func TestEtcdGrafanaDashboard(t *testing.T) {
 	enabled := true
 	c := NewDefaultConfig()
 	c.ClusterMonitoringConfiguration.EtcdConfig.Enabled = &enabled
-	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 
 	cms, err := f.GrafanaDashboardDefinitions()
 	if err != nil {
@@ -1930,7 +2307,7 @@ func TestThanosQuerierConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 	d, err := f.ThanosQuerierDeployment(
 		&v1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "foo"}},
 		false,
@@ -1967,8 +2344,11 @@ func TestThanosQuerierConfiguration(t *testing.T) {
 		})
 	}
 
+	kubeRbacProxyTLSCipherSuitesArg := ""
+	kubeRbacProxyMinTLSVersionArg := ""
 	for _, c := range d.Spec.Template.Spec.Containers {
-		if c.Name == "thanos-query" {
+		switch c.Name {
+		case "thanos-query":
 			for _, tc := range []struct {
 				name, want string
 				resource   func() *resource.Quantity
@@ -2000,9 +2380,8 @@ func TestThanosQuerierConfiguration(t *testing.T) {
 					}
 				})
 			}
-		}
 
-		if c.Name == "oauth-proxy" {
+		case "oauth-proxy":
 			volumeName := "thanos-querier-trusted-ca-bundle"
 			if !trustedCABundleVolumeConfigured(d.Spec.Template.Spec.Volumes, volumeName) {
 				t.Fatalf("trusted CA bundle volume for %s is not configured correctly", c.Name)
@@ -2010,7 +2389,24 @@ func TestThanosQuerierConfiguration(t *testing.T) {
 			if !trustedCABundleVolumeMountsConfigured(c.VolumeMounts, volumeName) {
 				t.Fatalf("trusted CA bundle volume mount for %s is not configured correctly", c.Name)
 			}
+
+		case "kube-rbac-proxy", "kube-rbac-proxy-rules", "kube-rbac-proxy-metrics":
+			kubeRbacProxyTLSCipherSuitesArg = getContainerArgValue(d.Spec.Template.Spec.Containers, KubeRbacProxyTLSCipherSuitesFlag, c.Name)
+			kubeRbacProxyMinTLSVersionArg = getContainerArgValue(d.Spec.Template.Spec.Containers, KubeRbacProxyMinTLSVersionFlag, c.Name)
 		}
+	}
+	expectedKubeRbacProxyTLSCipherSuitesArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyTLSCipherSuitesFlag,
+		strings.Join(crypto.OpenSSLToIANACipherSuites(APIServerDefaultTLSCiphers), ","))
+
+	if expectedKubeRbacProxyTLSCipherSuitesArg != kubeRbacProxyTLSCipherSuitesArg {
+		t.Fatalf("incorrect TLS ciphers, \n got %s, \nwant %s", kubeRbacProxyTLSCipherSuitesArg, expectedKubeRbacProxyTLSCipherSuitesArg)
+	}
+
+	expectedKubeRbacProxyMinTLSVersionArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyMinTLSVersionFlag, APIServerDefaultMinTLSVersion)
+	if expectedKubeRbacProxyMinTLSVersionArg != kubeRbacProxyMinTLSVersionArg {
+		t.Fatalf("incorrect TLS version \n got %s, \nwant %s", kubeRbacProxyMinTLSVersionArg, expectedKubeRbacProxyMinTLSVersionArg)
 	}
 }
 
@@ -2019,14 +2415,17 @@ func TestGrafanaConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 	d, err := f.GrafanaDeployment(&v1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "foo"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	kubeRbacProxyTLSCipherSuitesArg := ""
+	kubeRbacProxyMinTLSVersionArg := ""
 	for _, container := range d.Spec.Template.Spec.Containers {
-		if container.Name == "grafana-proxy" {
+		switch container.Name {
+		case "grafana-proxy":
 			volumeName := "grafana-trusted-ca-bundle"
 			if !trustedCABundleVolumeConfigured(d.Spec.Template.Spec.Volumes, volumeName) {
 				t.Fatalf("trusted CA bundle volume for %s is not configured correctly", container.Name)
@@ -2034,7 +2433,23 @@ func TestGrafanaConfiguration(t *testing.T) {
 			if !trustedCABundleVolumeMountsConfigured(container.VolumeMounts, volumeName) {
 				t.Fatalf("trusted CA bundle volume mount for %s is not configured correctly", container.Name)
 			}
+		case "kube-rbac-proxy-metrics":
+			kubeRbacProxyTLSCipherSuitesArg = getContainerArgValue(d.Spec.Template.Spec.Containers, KubeRbacProxyTLSCipherSuitesFlag, container.Name)
+			kubeRbacProxyMinTLSVersionArg = getContainerArgValue(d.Spec.Template.Spec.Containers, KubeRbacProxyMinTLSVersionFlag, container.Name)
 		}
+	}
+	expectedKubeRbacProxyTLSCipherSuitesArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyTLSCipherSuitesFlag,
+		strings.Join(crypto.OpenSSLToIANACipherSuites(APIServerDefaultTLSCiphers), ","))
+
+	if expectedKubeRbacProxyTLSCipherSuitesArg != kubeRbacProxyTLSCipherSuitesArg {
+		t.Fatalf("incorrect TLS ciphers, \n got %s, \nwant %s", kubeRbacProxyTLSCipherSuitesArg, expectedKubeRbacProxyTLSCipherSuitesArg)
+	}
+
+	expectedKubeRbacProxyMinTLSVersionArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyMinTLSVersionFlag, APIServerDefaultMinTLSVersion)
+	if expectedKubeRbacProxyMinTLSVersionArg != kubeRbacProxyMinTLSVersionArg {
+		t.Fatalf("incorrect TLS version \n got %s, \nwant %s", kubeRbacProxyMinTLSVersionArg, expectedKubeRbacProxyMinTLSVersionArg)
 	}
 }
 
@@ -2043,14 +2458,17 @@ func TestTelemeterConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 	d, err := f.TelemeterClientDeployment(&v1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "foo"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	kubeRbacProxyTLSCipherSuitesArg := ""
+	kubeRbacProxyMinTLSVersionArg := ""
 	for _, container := range d.Spec.Template.Spec.Containers {
-		if container.Name == "telemeter-client" {
+		switch container.Name {
+		case "telemeter-client":
 			volumeName := "telemeter-trusted-ca-bundle"
 			if !trustedCABundleVolumeConfigured(d.Spec.Template.Spec.Volumes, volumeName) {
 				t.Fatalf("trusted CA bundle volume for %s is not configured correctly", container.Name)
@@ -2058,7 +2476,24 @@ func TestTelemeterConfiguration(t *testing.T) {
 			if !trustedCABundleVolumeMountsConfigured(container.VolumeMounts, volumeName) {
 				t.Fatalf("trusted CA bundle volume mount for %s is not configured correctly", container.Name)
 			}
+		case "kube-rbac-proxy":
+			kubeRbacProxyTLSCipherSuitesArg = getContainerArgValue(d.Spec.Template.Spec.Containers, KubeRbacProxyTLSCipherSuitesFlag, container.Name)
+			kubeRbacProxyMinTLSVersionArg = getContainerArgValue(d.Spec.Template.Spec.Containers, KubeRbacProxyMinTLSVersionFlag, container.Name)
 		}
+	}
+
+	expectedKubeRbacProxyTLSCipherSuitesArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyTLSCipherSuitesFlag,
+		strings.Join(crypto.OpenSSLToIANACipherSuites(APIServerDefaultTLSCiphers), ","))
+
+	if expectedKubeRbacProxyTLSCipherSuitesArg != kubeRbacProxyTLSCipherSuitesArg {
+		t.Fatalf("incorrect TLS ciphers, \n got %s, \nwant %s", kubeRbacProxyTLSCipherSuitesArg, expectedKubeRbacProxyTLSCipherSuitesArg)
+	}
+
+	expectedKubeRbacProxyMinTLSVersionArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyMinTLSVersionFlag, APIServerDefaultMinTLSVersion)
+	if expectedKubeRbacProxyMinTLSVersionArg != kubeRbacProxyMinTLSVersionArg {
+		t.Fatalf("incorrect TLS version \n got %s, \nwant %s", kubeRbacProxyMinTLSVersionArg, expectedKubeRbacProxyMinTLSVersionArg)
 	}
 }
 
@@ -2067,7 +2502,7 @@ func TestThanosRulerConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
+	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 	tr, err := f.ThanosRulerCustomResource(
 		"",
 		&v1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "foo"}},
@@ -2172,8 +2607,7 @@ func TestNonHighlyAvailableInfrastructure(t *testing.T) {
 		{
 			name: "Prometheus adapter",
 			getSpec: func(f *Factory) (spec, error) {
-				p, err := f.PrometheusAdapterDeployment(
-					"foo",
+				p, err := f.PrometheusAdapterDeployment("foo",
 					map[string]string{
 						"requestheader-allowed-names":        "",
 						"requestheader-extra-headers-prefix": "",
@@ -2189,7 +2623,7 @@ func TestNonHighlyAvailableInfrastructure(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", NewDefaultConfig(), &fakeInfrastructureReader{highlyAvailableInfrastructure: false}, &fakeProxyReader{}, NewAssets(assetsPath))
+		f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", NewDefaultConfig(), &fakeInfrastructureReader{highlyAvailableInfrastructure: false}, &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 		spec, err := tc.getSpec(f)
 		if err != nil {
 			t.Error(err)
@@ -2211,6 +2645,34 @@ func TestPodDisruptionBudget(t *testing.T) {
 		getPDB func(f *Factory) (*policyv1.PodDisruptionBudget, error)
 		ha     bool
 	}{
+		{
+			name: "PrometheusK8s HA",
+			getPDB: func(f *Factory) (*policyv1.PodDisruptionBudget, error) {
+				return f.PrometheusK8sPodDisruptionBudget()
+			},
+			ha: true,
+		},
+		{
+			name: "PrometheusK8s non-HA",
+			getPDB: func(f *Factory) (*policyv1.PodDisruptionBudget, error) {
+				return f.PrometheusK8sPodDisruptionBudget()
+			},
+			ha: false,
+		},
+		{
+			name: "Alertmanager HA",
+			getPDB: func(f *Factory) (*policyv1.PodDisruptionBudget, error) {
+				return f.AlertmanagerPodDisruptionBudget()
+			},
+			ha: true,
+		},
+		{
+			name: "Alertmanager non-HA",
+			getPDB: func(f *Factory) (*policyv1.PodDisruptionBudget, error) {
+				return f.AlertmanagerPodDisruptionBudget()
+			},
+			ha: false,
+		},
 		{
 			name: "PrometheusAdapter HA",
 			getPDB: func(f *Factory) (*policyv1.PodDisruptionBudget, error) {
@@ -2239,10 +2701,38 @@ func TestPodDisruptionBudget(t *testing.T) {
 			},
 			ha: false,
 		},
+		{
+			name: "PrometheusUWM HA",
+			getPDB: func(f *Factory) (*policyv1.PodDisruptionBudget, error) {
+				return f.PrometheusUserWorkloadPodDisruptionBudget()
+			},
+			ha: true,
+		},
+		{
+			name: "PrometheusUWM non-HA",
+			getPDB: func(f *Factory) (*policyv1.PodDisruptionBudget, error) {
+				return f.PrometheusUserWorkloadPodDisruptionBudget()
+			},
+			ha: false,
+		},
+		{
+			name: "ThanosRuler HA",
+			getPDB: func(f *Factory) (*policyv1.PodDisruptionBudget, error) {
+				return f.ThanosRulerPodDisruptionBudget()
+			},
+			ha: true,
+		},
+		{
+			name: "ThanosRuler non-HA",
+			getPDB: func(f *Factory) (*policyv1.PodDisruptionBudget, error) {
+				return f.ThanosRulerPodDisruptionBudget()
+			},
+			ha: false,
+		},
 	}
 
 	for _, tc := range tests {
-		f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", NewDefaultConfig(), &fakeInfrastructureReader{highlyAvailableInfrastructure: tc.ha}, &fakeProxyReader{}, NewAssets(assetsPath))
+		f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", NewDefaultConfig(), &fakeInfrastructureReader{highlyAvailableInfrastructure: tc.ha}, &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
 		pdb, err := tc.getPDB(f)
 		if err != nil {
 			t.Error(err)
@@ -2266,33 +2756,43 @@ enableUserWorkload: true
 		"prometheus-operator":        "docker.io/openshift/origin-prometheus-operator:latest",
 		"prometheus-config-reloader": "docker.io/openshift/origin-prometheus-config-reloader:latest",
 		"configmap-reloader":         "docker.io/openshift/origin-configmap-reloader:latest",
+		"kube-rbac-proxy":            "docker.io/openshift/origin-kube-rbac-proxy:latest",
 	})
 
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath))
-	d, err := f.PrometheusOperatorUserWorkloadDeployment(nil)
+	f := NewFactory("openshift-monitoring", "openshift-user-workload-monitoring", c, defaultInfrastructureReader(), &fakeProxyReader{}, NewAssets(assetsPath), &APIServerConfig{})
+	d, err := f.PrometheusOperatorUserWorkloadDeployment()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	expectedPromOpImage := "docker.io/openshift/origin-prometheus-operator:latest"
-	resPromOpImage := d.Spec.Template.Spec.Containers[0].Image
-	if resPromOpImage != expectedPromOpImage {
-		t.Fatalf("Configuring the Prometheus Operator image failed, expected: %v, got %v", expectedPromOpImage, resPromOpImage)
-	}
-
 	prometheusReloaderFound := false
 	prometheusWebTLSCipherSuitesArg := ""
-	for i := range d.Spec.Template.Spec.Containers[0].Args {
-		if strings.HasPrefix(d.Spec.Template.Spec.Containers[0].Args[i], PrometheusConfigReloaderFlag+"docker.io/openshift/origin-prometheus-config-reloader:latest") {
-			prometheusReloaderFound = true
-		}
+	prometheusWebTLSVersionArg := ""
+	kubeRbacProxyTLSCipherSuitesArg := ""
+	kubeRbacProxyMinTLSVersionArg := ""
+	for _, container := range d.Spec.Template.Spec.Containers {
+		switch container.Name {
+		case "prometheus-operator":
+			if container.Image != "docker.io/openshift/origin-prometheus-operator:latest" {
+				t.Fatalf("%s image incorrectly configured", container.Name)
+			}
+			if getContainerArgValue(d.Spec.Template.Spec.Containers, PrometheusConfigReloaderFlag+"docker.io/openshift/origin-prometheus-config-reloader:latest", container.Name) != "" {
+				prometheusReloaderFound = true
+			}
 
-		if strings.HasPrefix(d.Spec.Template.Spec.Containers[0].Args[i], PrometheusOperatorWebTLSCipherSuitesFlag) {
-			prometheusWebTLSCipherSuitesArg = d.Spec.Template.Spec.Containers[0].Args[i]
+			prometheusWebTLSCipherSuitesArg = getContainerArgValue(d.Spec.Template.Spec.Containers, PrometheusOperatorWebTLSCipherSuitesFlag, container.Name)
+			prometheusWebTLSVersionArg = getContainerArgValue(d.Spec.Template.Spec.Containers, PrometheusOperatorWebTLSMinTLSVersionFlag, container.Name)
+
+		case "kube-rbac-proxy":
+			if container.Image != "docker.io/openshift/origin-kube-rbac-proxy:latest" {
+				t.Fatal("kube-rbac-proxy image incorrectly configured")
+			}
+			kubeRbacProxyTLSCipherSuitesArg = getContainerArgValue(d.Spec.Template.Spec.Containers, KubeRbacProxyTLSCipherSuitesFlag, container.Name)
+			kubeRbacProxyMinTLSVersionArg = getContainerArgValue(d.Spec.Template.Spec.Containers, KubeRbacProxyMinTLSVersionFlag, container.Name)
 		}
 	}
 
@@ -2306,6 +2806,35 @@ enableUserWorkload: true
 	)
 	if expectedPrometheusWebTLSCipherSuitesArg != prometheusWebTLSCipherSuitesArg {
 		t.Fatalf("incorrect TLS ciphers, \n got %s, \nwant %s", prometheusWebTLSCipherSuitesArg, expectedPrometheusWebTLSCipherSuitesArg)
+	}
+
+	expectedPrometheusWebTLSVersionArg := fmt.Sprintf("%s%s",
+		PrometheusOperatorWebTLSMinTLSVersionFlag, APIServerDefaultMinTLSVersion)
+	if expectedPrometheusWebTLSVersionArg != prometheusWebTLSVersionArg {
+		t.Fatalf("incorrect TLS version \n got %s, \nwant %s", prometheusWebTLSVersionArg, expectedPrometheusWebTLSVersionArg)
+	}
+
+	expectedKubeRbacProxyTLSCipherSuitesArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyTLSCipherSuitesFlag,
+		strings.Join(crypto.OpenSSLToIANACipherSuites(APIServerDefaultTLSCiphers), ","))
+
+	if expectedKubeRbacProxyTLSCipherSuitesArg != kubeRbacProxyTLSCipherSuitesArg {
+		t.Fatalf("incorrect TLS ciphers, \n got %s, \nwant %s", kubeRbacProxyTLSCipherSuitesArg, expectedKubeRbacProxyTLSCipherSuitesArg)
+	}
+
+	expectedKubeRbacProxyMinTLSVersionArg := fmt.Sprintf("%s%s",
+		KubeRbacProxyMinTLSVersionFlag, APIServerDefaultMinTLSVersion)
+	if expectedKubeRbacProxyMinTLSVersionArg != kubeRbacProxyMinTLSVersionArg {
+		t.Fatalf("incorrect TLS version \n got %s, \nwant %s", kubeRbacProxyMinTLSVersionArg, expectedKubeRbacProxyMinTLSVersionArg)
+	}
+
+	d2, err := f.PrometheusOperatorUserWorkloadDeployment()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(d, d2) {
+		t.Fatal("expected PrometheusOperatorUserWorkloadDeployment to be an idempotent function")
 	}
 }
 

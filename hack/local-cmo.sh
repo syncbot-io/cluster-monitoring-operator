@@ -54,7 +54,7 @@ disable_managed_cmo(){
         "overrides": [
           [ .spec | .? | .overrides[] | .? | select(.name != "cluster-monitoring-operator")] +
           [{
-            "group": "apps/v1",
+            "group": "apps",
             "kind": "Deployment",
             "name": "cluster-monitoring-operator",
             "namespace": "openshift-monitoring",
@@ -75,7 +75,7 @@ __EOF
 }
 
 images_from_deployment() {
-  kc get deployment cluster-monitoring-operator -o yaml | grep -o '\-images.*'
+  kc get deployment cluster-monitoring-operator -o json | jq -r '.spec.template.spec.containers[] | select(.name=="cluster-monitoring-operator") | .args[] | select(.|test("\\-images.*"))'
 }
 
 run() {

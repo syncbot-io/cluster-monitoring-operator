@@ -2,8 +2,11 @@ local addon = import 'github.com/prometheus-operator/kube-prometheus/jsonnet/kub
 
 addon {
   values+:: {
+    alertmanager+:: {
+      podAntiAffinity: 'hard',
+    },
     prometheus+: {
-      podAntiAffinity: 'soft',
+      podAntiAffinity: 'hard',
     },
     prometheusAdapter+: {
       podAntiAffinity: 'hard',

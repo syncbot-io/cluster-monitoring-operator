@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/managed-by: cluster-monitoring-operator
     app.kubernetes.io/name: prometheus-operator
     app.kubernetes.io/part-of: openshift-monitoring
-    app.kubernetes.io/version: 0.51.2
+    app.kubernetes.io/version: 0.52.1
   name: prometheus-operator
   namespace: openshift-monitoring
 spec:
@@ -23,14 +23,15 @@ spec:
         target.workload.openshift.io/management: '{"effect": "PreferredDuringScheduling"}'
       labels:
         app.kubernetes.io/component: controller
+        app.kubernetes.io/managed-by: cluster-monitoring-operator
         app.kubernetes.io/name: prometheus-operator
         app.kubernetes.io/part-of: openshift-monitoring
-        app.kubernetes.io/version: 0.51.2
+        app.kubernetes.io/version: 0.52.1
     spec:
       containers:
       - args:
         - --kubelet-service=kube-system/kubelet
-        - --prometheus-config-reloader=quay.io/prometheus-operator/prometheus-config-reloader:v0.51.2
+        - --prometheus-config-reloader=quay.io/prometheus-operator/prometheus-config-reloader:v0.52.1
         - --prometheus-instance-namespaces=openshift-monitoring
         - --thanos-ruler-instance-namespaces=openshift-monitoring
         - --alertmanager-instance-namespaces=openshift-monitoring
@@ -39,7 +40,7 @@ spec:
         - --web.enable-tls=true
         - --web.tls-cipher-suites=TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
         - --web.tls-min-version=VersionTLS12
-        image: quay.io/prometheus-operator/prometheus-operator:v0.51.2
+        image: quay.io/prometheus-operator/prometheus-operator:v0.52.1
         name: prometheus-operator
         ports:
         - containerPort: 8080
@@ -63,6 +64,7 @@ spec:
         - --tls-private-key-file=/etc/tls/private/tls.key
         - --client-ca-file=/etc/tls/client/client-ca.crt
         - --upstream-ca-file=/etc/configmaps/operator-cert-ca-bundle/service-ca.crt
+        - --config-file=/etc/kube-rbac-policy/config.yaml
         image: quay.io/brancz/kube-rbac-proxy:v0.11.0
         name: kube-rbac-proxy
         ports:
@@ -84,6 +86,9 @@ spec:
         - mountPath: /etc/tls/client
           name: metrics-client-ca
           readOnly: false
+        - mountPath: /etc/kube-rbac-policy
+          name: prometheus-operator-kube-rbac-proxy-config
+          readOnly: true
       nodeSelector:
         kubernetes.io/os: linux
         node-role.kubernetes.io/master: ""
@@ -98,9 +103,15 @@ spec:
       - name: prometheus-operator-tls
         secret:
           secretName: prometheus-operator-tls
-      - configMap:
+      - configmap:
+          items:
+          - key: service-ca.crt
+            path: service-ca.crt
           name: operator-certs-ca-bundle
         name: operator-certs-ca-bundle
+      - name: prometheus-operator-kube-rbac-proxy-config
+        secret:
+          secretName: prometheus-operator-kube-rbac-proxy-config
       - configMap:
           name: metrics-client-ca
         name: metrics-client-ca

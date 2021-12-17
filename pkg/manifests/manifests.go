@@ -19,13 +19,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/openshift/library-go/pkg/crypto"
 	"hash/fnv"
 	"io"
 	"net"
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/openshift/library-go/pkg/crypto"
 
 	routev1 "github.com/openshift/api/route/v1"
 	securityv1 "github.com/openshift/api/security/v1"
@@ -42,6 +43,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/yaml"
+	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 )
 
@@ -67,6 +69,7 @@ var (
 	AlertmanagerServiceMonitor        = "alertmanager/service-monitor.yaml"
 	AlertmanagerTrustedCABundle       = "alertmanager/trusted-ca-bundle.yaml"
 	AlertmanagerPrometheusRule        = "alertmanager/prometheus-rule.yaml"
+	AlertmanagerPodDisruptionBudget   = "alertmanager/pod-disruption-budget.yaml"
 
 	KubeStateMetricsClusterRoleBinding  = "kube-state-metrics/cluster-role-binding.yaml"
 	KubeStateMetricsClusterRole         = "kube-state-metrics/cluster-role.yaml"
@@ -119,6 +122,7 @@ var (
 	PrometheusK8sTrustedCABundle             = "prometheus-k8s/trusted-ca-bundle.yaml"
 	PrometheusK8sThanosSidecarServiceMonitor = "prometheus-k8s/service-monitor-thanos-sidecar.yaml"
 	PrometheusK8sTAlertmanagerRoleBinding    = "prometheus-k8s/alertmanager-role-binding.yaml"
+	PrometheusK8sPodDisruptionBudget         = "prometheus-k8s/pod-disruption-budget.yaml"
 
 	PrometheusUserWorkloadServingCertsCABundle        = "prometheus-user-workload/serving-certs-ca-bundle.yaml"
 	PrometheusUserWorkloadServiceAccount              = "prometheus-user-workload/service-account.yaml"
@@ -135,6 +139,7 @@ var (
 	PrometheusUserWorkloadGrpcTLSSecret               = "prometheus-user-workload/grpc-tls-secret.yaml"
 	PrometheusUserWorkloadThanosSidecarServiceMonitor = "prometheus-user-workload/service-monitor-thanos-sidecar.yaml"
 	PrometheusUserWorkloadAlertmanagerRoleBinding     = "prometheus-user-workload/alertmanager-role-binding.yaml"
+	PrometheusUserWorkloadPodDisruptionBudget         = "prometheus-user-workload/pod-disruption-budget.yaml"
 
 	PrometheusAdapterAPIService                         = "prometheus-adapter/api-service.yaml"
 	PrometheusAdapterClusterRole                        = "prometheus-adapter/cluster-role.yaml"
@@ -145,6 +150,7 @@ var (
 	PrometheusAdapterClusterRoleAggregatedMetricsReader = "prometheus-adapter/cluster-role-aggregated-metrics-reader.yaml"
 	PrometheusAdapterConfigMap                          = "prometheus-adapter/config-map.yaml"
 	PrometheusAdapterConfigMapPrometheus                = "prometheus-adapter/configmap-prometheus.yaml"
+	PrometheusAdapterConfigMapAuditPolicy               = "prometheus-adapter/configmap-audit-profiles.yaml"
 	PrometheusAdapterDeployment                         = "prometheus-adapter/deployment.yaml"
 	PrometheusAdapterPodDisruptionBudget                = "prometheus-adapter/pod-disruption-budget.yaml"
 	PrometheusAdapterRoleBindingAuthReader              = "prometheus-adapter/role-binding-auth-reader.yaml"
@@ -161,13 +167,15 @@ var (
 	PrometheusOperatorCertsCABundle         = "prometheus-operator/operator-certs-ca-bundle.yaml"
 	PrometheusOperatorRuleValidatingWebhook = "prometheus-operator/prometheus-rule-validating-webhook.yaml"
 	PrometheusOperatorPrometheusRule        = "prometheus-operator/prometheus-rule.yaml"
+	PrometheusOperatorKubeRbacProxySecret   = "prometheus-operator/kube-rbac-proxy-secret.yaml"
 
-	PrometheusOperatorUserWorkloadServiceAccount     = "prometheus-operator-user-workload/service-account.yaml"
-	PrometheusOperatorUserWorkloadClusterRole        = "prometheus-operator-user-workload/cluster-role.yaml"
-	PrometheusOperatorUserWorkloadClusterRoleBinding = "prometheus-operator-user-workload/cluster-role-binding.yaml"
-	PrometheusOperatorUserWorkloadService            = "prometheus-operator-user-workload/service.yaml"
-	PrometheusOperatorUserWorkloadDeployment         = "prometheus-operator-user-workload/deployment.yaml"
-	PrometheusOperatorUserWorkloadServiceMonitor     = "prometheus-operator-user-workload/service-monitor.yaml"
+	PrometheusOperatorUserWorkloadServiceAccount      = "prometheus-operator-user-workload/service-account.yaml"
+	PrometheusOperatorUserWorkloadClusterRole         = "prometheus-operator-user-workload/cluster-role.yaml"
+	PrometheusOperatorUserWorkloadClusterRoleBinding  = "prometheus-operator-user-workload/cluster-role-binding.yaml"
+	PrometheusOperatorUserWorkloadService             = "prometheus-operator-user-workload/service.yaml"
+	PrometheusOperatorUserWorkloadDeployment          = "prometheus-operator-user-workload/deployment.yaml"
+	PrometheusOperatorUserWorkloadServiceMonitor      = "prometheus-operator-user-workload/service-monitor.yaml"
+	PrometheusOperatorUserWorkloadKubeRbacProxySecret = "prometheus-operator-user-workload/kube-rbac-proxy-secret.yaml"
 
 	GrafanaClusterRoleBinding    = "grafana/cluster-role-binding.yaml"
 	GrafanaClusterRole           = "grafana/cluster-role.yaml"
@@ -241,6 +249,7 @@ var (
 	ThanosRulerServiceMonitor               = "thanos-ruler/service-monitor.yaml"
 	ThanosRulerPrometheusRule               = "thanos-ruler/thanos-ruler-prometheus-rule.yaml"
 	ThanosRulerAlertmanagerRoleBinding      = "thanos-ruler/alertmanager-role-binding.yaml"
+	ThanosRulerPodDisruptionBudget          = "thanos-ruler/pod-disruption-budget.yaml"
 
 	TelemeterTrustedCABundle = "telemeter-client/trusted-ca-bundle.yaml"
 
@@ -255,6 +264,10 @@ var (
 	PrometheusOperatorAlertmanagerInstanceNamespacesFlag = "--alertmanager-instance-namespaces="
 	PrometheusOperatorWebTLSCipherSuitesFlag             = "--web.tls-cipher-suites="
 	PrometheusOperatorWebTLSMinTLSVersionFlag            = "--web.tls-min-version="
+	PrometheusAdapterTLSCipherSuitesFlag                 = "--tls-cipher-suites="
+	PrometheusAdapterTLSMinTLSVersionFlag                = "--tls-min-version="
+	KubeRbacProxyTLSCipherSuitesFlag                     = "--tls-cipher-suites="
+	KubeRbacProxyMinTLSVersionFlag                       = "--tls-min-version="
 
 	AuthProxyExternalURLFlag  = "-external-url="
 	AuthProxyCookieDomainFlag = "-cookie-domain="
@@ -262,9 +275,14 @@ var (
 
 	TrustedCABundleKey = "ca-bundle.crt"
 
+	AlertmanagerLegacyServiceMonitorName                = "alertmanager"
 	AdditionalAlertmanagerConfigSecretKey               = "alertmanager-configs.yaml"
 	PrometheusK8sAdditionalAlertmanagerConfigSecretName = "prometheus-k8s-additional-alertmanager-configs"
 	PrometheusUWAdditionalAlertmanagerConfigSecretName  = "prometheus-user-workload-additional-alertmanager-configs"
+)
+
+var (
+	ErrConfigValidation = fmt.Errorf("invalid value for config")
 )
 
 type Factory struct {
@@ -274,6 +292,7 @@ type Factory struct {
 	infrastructure        InfrastructureReader
 	proxy                 ProxyReader
 	assets                *Assets
+	APIServerConfig       *APIServerConfig
 }
 
 // InfrastructureReader has methods to describe the cluster infrastructure.
@@ -289,7 +308,7 @@ type ProxyReader interface {
 	NoProxy() string
 }
 
-func NewFactory(namespace, namespaceUserWorkload string, c *Config, infrastructure InfrastructureReader, proxy ProxyReader, a *Assets) *Factory {
+func NewFactory(namespace, namespaceUserWorkload string, c *Config, infrastructure InfrastructureReader, proxy ProxyReader, a *Assets, apiServerConfig *APIServerConfig) *Factory {
 	return &Factory{
 		namespace:             namespace,
 		namespaceUserWorkload: namespaceUserWorkload,
@@ -297,6 +316,7 @@ func NewFactory(namespace, namespaceUserWorkload string, c *Config, infrastructu
 		infrastructure:        infrastructure,
 		proxy:                 proxy,
 		assets:                a,
+		APIServerConfig:       apiServerConfig,
 	}
 }
 
@@ -444,6 +464,34 @@ func (f *Factory) AlertmanagerMain(host string, trustedCABundleCM *v1.ConfigMap)
 		a.Spec.Storage = &monv1.StorageSpec{
 			VolumeClaimTemplate: *f.config.ClusterMonitoringConfiguration.AlertmanagerMainConfig.VolumeClaimTemplate,
 		}
+	} else if f.infrastructure.HighlyAvailableInfrastructure() {
+		// When no persistent storage is configured, add a startup probe to
+		// ensure that the Alertmanager container has time to replicate data
+		// from other peers before declaring itself as ready. This allows
+		// silences and notifications to be preserved on roll-outs. We assume
+		// that 20 seconds is enough for a full synchronization (this is twice
+		// the time Alertmanager waits before declaring that it can start
+		// sending notfications).
+		a.Spec.Containers = append(a.Spec.Containers,
+			v1.Container{
+				Name: "alertmanager",
+				StartupProbe: &v1.Probe{
+					Handler: v1.Handler{
+						Exec: &v1.ExecAction{
+							Command: []string{
+								"sh",
+								"-c",
+								"exec curl http://localhost:9093/-/ready",
+							},
+						},
+					},
+					InitialDelaySeconds: 20,
+					PeriodSeconds:       1,
+					SuccessThreshold:    1,
+					TimeoutSeconds:      3,
+				},
+			},
+		)
 	}
 
 	if f.config.ClusterMonitoringConfiguration.AlertmanagerMainConfig.NodeSelector != nil {
@@ -475,10 +523,9 @@ func (f *Factory) AlertmanagerMain(host string, trustedCABundleCM *v1.ConfigMap)
 					trustedCABundleVolumeMount(volumeName),
 				)
 			}
-		case "kube-rbac-proxy":
+		case "kube-rbac-proxy", "kube-rbac-proxy-metric":
 			a.Spec.Containers[i].Image = f.config.Images.KubeRbacProxy
-		case "kube-rbac-proxy-metric":
-			a.Spec.Containers[i].Image = f.config.Images.KubeRbacProxy
+			a.Spec.Containers[i].Args = f.setTLSSecurityConfiguration(c.Args, KubeRbacProxyTLSCipherSuitesFlag, KubeRbacProxyMinTLSVersionFlag)
 		case "prom-label-proxy":
 			a.Spec.Containers[i].Image = f.config.Images.PromLabelProxy
 		}
@@ -537,6 +584,10 @@ func (f *Factory) KubeStateMetricsClusterRoleBinding() (*rbacv1.ClusterRoleBindi
 	return crb, nil
 }
 
+func (f *Factory) AlertmanagerPodDisruptionBudget() (*policyv1.PodDisruptionBudget, error) {
+	return f.NewPodDisruptionBudget(f.assets.MustNewAssetReader(AlertmanagerPodDisruptionBudget))
+}
+
 func (f *Factory) KubeStateMetricsClusterRole() (*rbacv1.ClusterRole, error) {
 	return f.NewClusterRole(f.assets.MustNewAssetReader(KubeStateMetricsClusterRole))
 }
@@ -560,11 +611,12 @@ func (f *Factory) KubeStateMetricsDeployment() (*appsv1.Deployment, error) {
 		return nil, err
 	}
 	for i, container := range d.Spec.Template.Spec.Containers {
-		if container.Name == "kube-state-metrics" {
-			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.KubeStateMetrics
-		}
-		if container.Name == "kube-rbac-proxy-self" || container.Name == "kube-rbac-proxy-main" {
+		switch container.Name {
+		case "kube-rbac-proxy-self", "kube-rbac-proxy-main":
 			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.KubeRbacProxy
+			d.Spec.Template.Spec.Containers[i].Args = f.setTLSSecurityConfiguration(container.Args, KubeRbacProxyTLSCipherSuitesFlag, KubeRbacProxyMinTLSVersionFlag)
+		case "kube-state-metrics":
+			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.KubeStateMetrics
 		}
 	}
 
@@ -653,10 +705,9 @@ func (f *Factory) OpenShiftStateMetricsDeployment() (*appsv1.Deployment, error) 
 
 	for i, container := range d.Spec.Template.Spec.Containers {
 		switch container.Name {
-		case "kube-rbac-proxy-main":
+		case "kube-rbac-proxy-main", "kube-rbac-proxy-self":
 			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.KubeRbacProxy
-		case "kube-rbac-proxy-self":
-			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.KubeRbacProxy
+			d.Spec.Template.Spec.Containers[i].Args = f.setTLSSecurityConfiguration(container.Args, KubeRbacProxyTLSCipherSuitesFlag, KubeRbacProxyMinTLSVersionFlag)
 		case "openshift-state-metrics":
 			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.OpenShiftStateMetrics
 		}
@@ -731,6 +782,7 @@ func (f *Factory) NodeExporterDaemonSet() (*appsv1.DaemonSet, error) {
 			ds.Spec.Template.Spec.Containers[i].Image = f.config.Images.NodeExporter
 		case "kube-rbac-proxy":
 			ds.Spec.Template.Spec.Containers[i].Image = f.config.Images.KubeRbacProxy
+			ds.Spec.Template.Spec.Containers[i].Args = f.setTLSSecurityConfiguration(container.Args, KubeRbacProxyTLSCipherSuitesFlag, KubeRbacProxyMinTLSVersionFlag)
 		}
 	}
 
@@ -1360,6 +1412,10 @@ func (f *Factory) PrometheusK8s(host string, grpcTLS *v1.Secret, trustedCABundle
 		}
 	}
 
+	if f.config.ClusterMonitoringConfiguration.PrometheusK8sConfig.QueryLogFile != "" {
+		p.Spec.QueryLogFile = f.config.ClusterMonitoringConfiguration.PrometheusK8sConfig.QueryLogFile
+	}
+
 	telemetryEnabled := f.config.ClusterMonitoringConfiguration.TelemeterClientConfig.IsEnabled()
 	if telemetryEnabled && f.config.RemoteWrite {
 
@@ -1483,9 +1539,11 @@ func (f *Factory) PrometheusK8s(host string, grpcTLS *v1.Secret, trustedCABundle
 
 		case "kube-rbac-proxy":
 			p.Spec.Containers[i].Image = f.config.Images.KubeRbacProxy
+			p.Spec.Containers[i].Args = f.setTLSSecurityConfiguration(container.Args, KubeRbacProxyTLSCipherSuitesFlag, KubeRbacProxyMinTLSVersionFlag)
 		case "kube-rbac-proxy-thanos":
 			p.Spec.Containers[i].Image = f.config.Images.KubeRbacProxy
 
+			p.Spec.Containers[i].Args = f.setTLSSecurityConfiguration(container.Args, KubeRbacProxyTLSCipherSuitesFlag, KubeRbacProxyMinTLSVersionFlag)
 			p.Spec.Containers[i].Args = append(
 				p.Spec.Containers[i].Args,
 				clientCAArg,
@@ -1652,9 +1710,14 @@ func (f *Factory) PrometheusUserWorkload(grpcTLS *v1.Secret) (*monv1.Prometheus,
 		p.Spec.Thanos.Image = &f.config.Images.Thanos
 	}
 
+	if f.config.UserWorkloadConfiguration.Prometheus.QueryLogFile != "" {
+		p.Spec.QueryLogFile = f.config.UserWorkloadConfiguration.Prometheus.QueryLogFile
+	}
+
 	for i, container := range p.Spec.Containers {
 		if container.Name == "kube-rbac-proxy" || container.Name == "kube-rbac-proxy-thanos" {
 			p.Spec.Containers[i].Image = f.config.Images.KubeRbacProxy
+			p.Spec.Containers[i].Args = f.setTLSSecurityConfiguration(container.Args, KubeRbacProxyTLSCipherSuitesFlag, KubeRbacProxyMinTLSVersionFlag)
 		}
 	}
 	p.Spec.Alerting.Alertmanagers[0].Namespace = f.namespace
@@ -1786,6 +1849,17 @@ func (f *Factory) PrometheusAdapterConfigMap() (*v1.ConfigMap, error) {
 	return cm, nil
 }
 
+func (f *Factory) PrometheusAdapterConfigMapAuditPolicy() (*v1.ConfigMap, error) {
+	cm, err := f.NewConfigMap(f.assets.MustNewAssetReader(PrometheusAdapterConfigMapAuditPolicy))
+	if err != nil {
+		return nil, err
+	}
+
+	cm.Namespace = f.namespace
+
+	return cm, nil
+}
+
 func (f *Factory) PrometheusAdapterConfigMapPrometheus() (*v1.ConfigMap, error) {
 	cm, err := f.NewConfigMap(f.assets.MustNewAssetReader(PrometheusAdapterConfigMapPrometheus))
 	if err != nil {
@@ -1797,6 +1871,22 @@ func (f *Factory) PrometheusAdapterConfigMapPrometheus() (*v1.ConfigMap, error) 
 	return cm, nil
 }
 
+func validateAuditProfile(profile auditv1.Level) error {
+	// Refer: audit rules: https://kubernetes.io/docs/tasks/debug-application-cluster/audit/#audit-policy
+	// for valid log levels
+
+	switch profile {
+	case auditv1.LevelNone,
+		auditv1.LevelMetadata,
+		auditv1.LevelRequest,
+		auditv1.LevelRequestResponse:
+		return nil
+	default:
+		// a wrong profile name is a Config validation Error
+		return fmt.Errorf("%w - adapter audit profile: %s", ErrConfigValidation, profile)
+	}
+}
+
 func (f *Factory) PrometheusAdapterDeployment(apiAuthSecretName string, requestheader map[string]string) (*appsv1.Deployment, error) {
 	dep, err := f.NewDeployment(f.assets.MustNewAssetReader(PrometheusAdapterDeployment))
 	if err != nil {
@@ -1806,12 +1896,14 @@ func (f *Factory) PrometheusAdapterDeployment(apiAuthSecretName string, requesth
 	spec := dep.Spec.Template.Spec
 
 	spec.Containers[0].Image = f.config.Images.K8sPrometheusAdapter
-	if f.config.ClusterMonitoringConfiguration.K8sPrometheusAdapter != nil && len(f.config.ClusterMonitoringConfiguration.K8sPrometheusAdapter.NodeSelector) > 0 {
-		spec.NodeSelector = f.config.ClusterMonitoringConfiguration.K8sPrometheusAdapter.NodeSelector
+
+	config := f.config.ClusterMonitoringConfiguration.K8sPrometheusAdapter
+	if config != nil && len(config.NodeSelector) > 0 {
+		spec.NodeSelector = config.NodeSelector
 	}
 
-	if f.config.ClusterMonitoringConfiguration.K8sPrometheusAdapter != nil && len(f.config.ClusterMonitoringConfiguration.K8sPrometheusAdapter.Tolerations) > 0 {
-		spec.Tolerations = f.config.ClusterMonitoringConfiguration.K8sPrometheusAdapter.Tolerations
+	if config != nil && len(config.Tolerations) > 0 {
+		spec.Tolerations = config.Tolerations
 	}
 	dep.Namespace = f.namespace
 
@@ -1847,6 +1939,19 @@ func (f *Factory) PrometheusAdapterDeployment(apiAuthSecretName string, requesth
 		},
 	)
 
+	if err := validateAuditProfile(config.Audit.Profile); err != nil {
+		return nil, err
+	}
+
+	profile := strings.ToLower(string(config.Audit.Profile))
+	spec.Containers[0].Args = append(spec.Containers[0].Args,
+		fmt.Sprintf("--audit-policy-file=/etc/audit/%s-profile.yaml", profile),
+		"--audit-log-path=/var/log/adapter/audit.log",
+		"--audit-log-maxsize=100", // 100 MB
+		"--audit-log-maxbackup=5", // limit space consumed by restricting backups
+		"--audit-log-compress=true",
+	)
+
 	spec.Volumes = append(spec.Volumes,
 		v1.Volume{
 			Name: "tls",
@@ -1857,6 +1962,9 @@ func (f *Factory) PrometheusAdapterDeployment(apiAuthSecretName string, requesth
 			},
 		},
 	)
+
+	spec.Containers[0].Args = f.setTLSSecurityConfiguration(spec.Containers[0].Args,
+		PrometheusAdapterTLSCipherSuitesFlag, PrometheusAdapterTLSMinTLSVersionFlag)
 
 	dep.Spec.Template.Spec = spec
 
@@ -2015,6 +2123,17 @@ func (f *Factory) PrometheusOperatorUserWorkloadClusterRoleBinding() (*rbacv1.Cl
 	return crb, nil
 }
 
+func (f *Factory) PrometheusOperatorUserWorkloadCRBACProxySecret() (*v1.Secret, error) {
+	s, err := f.NewSecret(f.assets.MustNewAssetReader(PrometheusOperatorUserWorkloadKubeRbacProxySecret))
+	if err != nil {
+		return nil, err
+	}
+
+	s.Namespace = f.namespaceUserWorkload
+
+	return s, nil
+}
+
 func (f *Factory) PrometheusOperatorClusterRole() (*rbacv1.ClusterRole, error) {
 	return f.NewClusterRole(f.assets.MustNewAssetReader(PrometheusOperatorClusterRole))
 }
@@ -2045,7 +2164,18 @@ func (f *Factory) PrometheusOperatorUserWorkloadServiceAccount() (*v1.ServiceAcc
 	return s, nil
 }
 
-func (f *Factory) PrometheusOperatorDeployment(apiServerConfig *APIServerConfig) (*appsv1.Deployment, error) {
+func (f *Factory) PrometheusOperatorRBACProxySecret() (*v1.Secret, error) {
+	s, err := f.NewSecret(f.assets.MustNewAssetReader(PrometheusOperatorKubeRbacProxySecret))
+	if err != nil {
+		return nil, err
+	}
+
+	s.Namespace = f.namespace
+
+	return s, nil
+}
+
+func (f *Factory) PrometheusOperatorDeployment() (*appsv1.Deployment, error) {
 	d, err := f.NewDeployment(f.assets.MustNewAssetReader(PrometheusOperatorDeployment))
 	if err != nil {
 		return nil, err
@@ -2064,6 +2194,7 @@ func (f *Factory) PrometheusOperatorDeployment(apiServerConfig *APIServerConfig)
 		switch container.Name {
 		case "kube-rbac-proxy":
 			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.KubeRbacProxy
+			d.Spec.Template.Spec.Containers[i].Args = f.setTLSSecurityConfiguration(container.Args, KubeRbacProxyTLSCipherSuitesFlag, KubeRbacProxyMinTLSVersionFlag)
 		case "prometheus-operator":
 			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.PrometheusOperator
 
@@ -2085,7 +2216,7 @@ func (f *Factory) PrometheusOperatorDeployment(apiServerConfig *APIServerConfig)
 				args = append(args, fmt.Sprintf("--log-level=%s", f.config.ClusterMonitoringConfiguration.PrometheusOperatorConfig.LogLevel))
 			}
 
-			args = setTLSSecurityConfiguration(args, apiServerConfig)
+			args = f.setTLSSecurityConfiguration(args, PrometheusOperatorWebTLSCipherSuitesFlag, PrometheusOperatorWebTLSMinTLSVersionFlag)
 			d.Spec.Template.Spec.Containers[i].Args = args
 		}
 	}
@@ -2094,7 +2225,7 @@ func (f *Factory) PrometheusOperatorDeployment(apiServerConfig *APIServerConfig)
 	return d, nil
 }
 
-func (f *Factory) PrometheusOperatorUserWorkloadDeployment(apiServerConfig *APIServerConfig) (*appsv1.Deployment, error) {
+func (f *Factory) PrometheusOperatorUserWorkloadDeployment() (*appsv1.Deployment, error) {
 	d, err := f.NewDeployment(f.assets.MustNewAssetReader(PrometheusOperatorUserWorkloadDeployment))
 	if err != nil {
 		return nil, err
@@ -2112,6 +2243,7 @@ func (f *Factory) PrometheusOperatorUserWorkloadDeployment(apiServerConfig *APIS
 		switch container.Name {
 		case "kube-rbac-proxy":
 			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.KubeRbacProxy
+			d.Spec.Template.Spec.Containers[i].Args = f.setTLSSecurityConfiguration(container.Args, KubeRbacProxyTLSCipherSuitesFlag, KubeRbacProxyMinTLSVersionFlag)
 		case "prometheus-operator":
 			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.PrometheusOperator
 
@@ -2132,7 +2264,7 @@ func (f *Factory) PrometheusOperatorUserWorkloadDeployment(apiServerConfig *APIS
 			if f.config.UserWorkloadConfiguration.PrometheusOperator.LogLevel != "" {
 				args = append(args, fmt.Sprintf("--log-level=%s", f.config.UserWorkloadConfiguration.PrometheusOperator.LogLevel))
 			}
-			args = setTLSSecurityConfiguration(args, apiServerConfig)
+			args = f.setTLSSecurityConfiguration(args, PrometheusOperatorWebTLSCipherSuitesFlag, PrometheusOperatorWebTLSMinTLSVersionFlag)
 			d.Spec.Template.Spec.Containers[i].Args = args
 		}
 	}
@@ -2141,12 +2273,12 @@ func (f *Factory) PrometheusOperatorUserWorkloadDeployment(apiServerConfig *APIS
 	return d, nil
 }
 
-func setTLSSecurityConfiguration(args []string, config *APIServerConfig) []string {
-	cipherSuites := strings.Join(crypto.OpenSSLToIANACipherSuites(config.GetTLSCiphers()), ",")
-	args = setArg(args, PrometheusOperatorWebTLSCipherSuitesFlag, cipherSuites)
+func (f *Factory) setTLSSecurityConfiguration(args []string, tlsCipherSuitesArg string, minTLSversionArg string) []string {
+	cipherSuites := strings.Join(crypto.OpenSSLToIANACipherSuites(f.APIServerConfig.GetTLSCiphers()), ",")
+	args = setArg(args, tlsCipherSuitesArg, cipherSuites)
 
-	minTLSVersion := config.GetMinTLSVersion()
-	args = setArg(args, PrometheusOperatorWebTLSMinTLSVersionFlag, string(minTLSVersion))
+	minTLSVersion := f.APIServerConfig.GetMinTLSVersion()
+	args = setArg(args, minTLSversionArg, string(minTLSVersion))
 
 	return args
 }
@@ -2217,6 +2349,18 @@ func (f *Factory) PrometheusK8sServiceThanosSidecar() (*v1.Service, error) {
 	s.Namespace = f.namespace
 
 	return s, nil
+}
+
+func (f *Factory) PrometheusK8sPodDisruptionBudget() (*policyv1.PodDisruptionBudget, error) {
+	return f.NewPodDisruptionBudget(f.assets.MustNewAssetReader(PrometheusK8sPodDisruptionBudget))
+}
+
+func (f *Factory) PrometheusUserWorkloadPodDisruptionBudget() (*policyv1.PodDisruptionBudget, error) {
+	return f.NewPodDisruptionBudget(f.assets.MustNewAssetReader(PrometheusUserWorkloadPodDisruptionBudget))
+}
+
+func (f *Factory) ThanosRulerPodDisruptionBudget() (*policyv1.PodDisruptionBudget, error) {
+	return f.NewPodDisruptionBudget(f.assets.MustNewAssetReader(ThanosRulerPodDisruptionBudget))
 }
 
 func (f *Factory) PrometheusUserWorkloadService() (*v1.Service, error) {
@@ -2412,6 +2556,7 @@ func (f *Factory) GrafanaDeployment(proxyCABundleCM *v1.ConfigMap) (*appsv1.Depl
 			}
 		case "kube-rbac-proxy-metrics":
 			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.KubeRbacProxy
+			d.Spec.Template.Spec.Containers[i].Args = f.setTLSSecurityConfiguration(container.Args, KubeRbacProxyTLSCipherSuitesFlag, KubeRbacProxyMinTLSVersionFlag)
 		}
 	}
 
@@ -3107,14 +3252,9 @@ func (f *Factory) ThanosQuerierDeployment(grpcTLS *v1.Secret, enableUserWorkload
 		case "prom-label-proxy":
 			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.PromLabelProxy
 
-		case "kube-rbac-proxy":
+		case "kube-rbac-proxy", "kube-rbac-proxy-rules", "kube-rbac-proxy-metrics":
 			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.KubeRbacProxy
-
-		case "kube-rbac-proxy-rules":
-			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.KubeRbacProxy
-
-		case "kube-rbac-proxy-metrics":
-			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.KubeRbacProxy
+			d.Spec.Template.Spec.Containers[i].Args = f.setTLSSecurityConfiguration(c.Args, KubeRbacProxyTLSCipherSuitesFlag, KubeRbacProxyMinTLSVersionFlag)
 		}
 	}
 
@@ -3314,6 +3454,7 @@ func (f *Factory) TelemeterClientDeployment(proxyCABundleCM *v1.ConfigMap) (*app
 			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.PrometheusConfigReloader
 		case "kube-rbac-proxy":
 			d.Spec.Template.Spec.Containers[i].Image = f.config.Images.KubeRbacProxy
+			d.Spec.Template.Spec.Containers[i].Args = f.setTLSSecurityConfiguration(container.Args, KubeRbacProxyTLSCipherSuitesFlag, KubeRbacProxyMinTLSVersionFlag)
 		}
 	}
 

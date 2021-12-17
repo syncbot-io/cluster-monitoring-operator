@@ -84,12 +84,17 @@ func (t *PrometheusOperatorTask) Run(ctx context.Context) error {
 		return errors.Wrap(err, "reconciling Prometheus Operator Service failed")
 	}
 
-	config, err := t.client.GetAPIServerConfig(ctx, "cluster")
+	rs, err := t.factory.PrometheusOperatorRBACProxySecret()
 	if err != nil {
-		return errors.Wrap(err, "failed to get API server configuration")
+		return errors.Wrap(err, "initializing Prometheus Operator RBAC proxy Secret failed")
 	}
-	apiserverConfig := manifests.NewAPIServerConfig(config)
-	d, err := t.factory.PrometheusOperatorDeployment(apiserverConfig)
+
+	err = t.client.CreateIfNotExistSecret(ctx, rs)
+	if err != nil {
+		return errors.Wrap(err, "creating Prometheus Operator RBAC proxy Secret failed")
+	}
+
+	d, err := t.factory.PrometheusOperatorDeployment()
 	if err != nil {
 		return errors.Wrap(err, "initializing Prometheus Operator Deployment failed")
 	}

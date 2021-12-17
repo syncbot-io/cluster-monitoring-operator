@@ -6,6 +6,16 @@ metadata:
   name: user-workload
   namespace: openshift-user-workload-monitoring
 spec:
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: thanos-ruler
+            thanos-ruler: user-workload
+        namespaces:
+        - openshift-user-workload-monitoring
+        topologyKey: kubernetes.io/hostname
   alertmanagersConfig:
     key: alertmanagers.yaml
     name: thanos-ruler-alertmanagers-config
@@ -66,7 +76,7 @@ spec:
     caFile: /etc/tls/grpc/ca.crt
     certFile: /etc/tls/grpc/server.crt
     keyFile: /etc/tls/grpc/server.key
-  image: quay.io/thanos/thanos:v0.22.0
+  image: quay.io/thanos/thanos:v0.23.1
   listenLocal: true
   podMetadata:
     annotations:
@@ -103,6 +113,9 @@ spec:
   serviceAccountName: thanos-ruler
   volumes:
   - configmap:
+      items:
+      - key: service-ca.crt
+        path: service-ca.crt
       name: serving-certs-ca-bundle
     name: serving-certs-ca-bundle
   - name: secret-thanos-ruler-tls

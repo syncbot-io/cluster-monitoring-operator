@@ -12,9 +12,13 @@ GOPROXY?=http://proxy.golang.org
 export GO111MODULE
 export GOPROXY
 
-PKGS=$(shell go list ./... | grep -v -E '/vendor/|/test|/examples')
+# go pakages for unit tests, excluding e2e tests
+PKGS=$(shell go list ./... | grep -v /test/e2e)
 GOLANG_FILES:=$(shell find . -name \*.go -print)
-ASSETS=$(shell grep -oh '[^"]*/.*\.yaml' pkg/manifests/manifests.go | sed 's/^/assets\//')
+# NOTE: grep -v %.yaml is needed  because "%s-policy.yaml" is used
+# in manifest.go and that isn't a valid asset.
+ASSETS=$(shell grep -oh '[^"]*/.*\.yaml' pkg/manifests/manifests.go \
+          | grep -v '%.*yaml' | sed 's/^/assets\//')
 
 BIN_DIR ?= $(shell pwd)/tmp/bin
 
@@ -89,7 +93,10 @@ update: $(JB_BIN)
 	cd jsonnet && $(JB_BIN) update $(COMPONENTS)
 
 .PHONY: generate
-generate: build-jsonnet docs check-assets check-runbooks
+generate: build-jsonnet docs
+
+.PHONY: verify
+verify: check-assets check-rules check-runbooks
 
 # TODO(paulfantom): generate-in-docker can be completely removed after OpenShift 4.7 is EOL
 .PHONY: generate-in-docker
@@ -126,19 +133,19 @@ versions: $(GOJSONTOYAML_BIN)
 docs: $(EMBEDMD_BIN) Documentation/telemetry/telemeter_query
 	$(EMBEDMD_BIN) -w `find Documentation -name "*.md"`
 
-Documentation/telemeter_query: manifests/0000_50_cluster-monitoring-operator_04-config.yaml hack/telemeter_query.go
-	go generate ./hack/telemeter_query.go > Documentation/telemeter_query
+Documentation/telemetry/telemeter_query: manifests/0000_50_cluster-monitoring-operator_04-config.yaml hack/telemeter_query.go
+	go generate ./hack/telemeter_query.go > Documentation/telemetry/telemeter_query
 
 ##############
 # Formatting #
 ##############
 
 .PHONY: format
-format: go-fmt shellcheck jsonnet-fmt check-rules
+format: go-fmt shellcheck jsonnet-fmt
 
 .PHONY: go-fmt
 go-fmt:
-	go fmt $(PKGS)
+	go fmt ./...
 
 .PHONY: jsonnet-fmt
 jsonnet-fmt: $(JSONNETFMT_BIN)

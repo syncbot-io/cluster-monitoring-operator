@@ -11,6 +11,9 @@ local excludedRuleGroups = [
   'kube-apiserver.rules',
   'kube-apiserver-burnrate.rules',
   'kube-apiserver-histogram.rules',
+  // Availability of kube-proxy depends on the selected CNO plugin hence the
+  // rules should be managed by CNO directly.
+  'kubernetes-system-kube-proxy',
 ];
 
 local excludedRules = [
@@ -18,6 +21,7 @@ local excludedRules = [
     name: 'alertmanager.rules',
     rules: [
       { alert: 'AlertmanagerClusterCrashlooping' },
+      { alert: 'AlertmanagerClusterFailedToSendAlerts', severity: 'warning' },
     ],
   },
   {
@@ -365,6 +369,8 @@ local removeRunbookUrl(rule) = rule {
 local patchOrExcludeRule(rule, ruleSet, operation) =
   if std.length(ruleSet) == 0 then
     [rule]
+  else if ('severity' in ruleSet[0] && !std.startsWith(rule.labels.severity, ruleSet[0].severity)) then
+    [] + patchOrExcludeRule(rule, ruleSet[1:], operation)
   else if (('alert' in rule && 'alert' in ruleSet[0]) && std.startsWith(rule.alert, ruleSet[0].alert)) ||
           (('record' in rule && 'record' in ruleSet[0]) && std.startsWith(rule.record, ruleSet[0].record)) then
     if operation == 'patch' then

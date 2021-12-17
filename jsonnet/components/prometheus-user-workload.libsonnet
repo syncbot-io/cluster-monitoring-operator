@@ -1,4 +1,6 @@
+local generateCertInjection = import '../utils/generate-certificate-injection.libsonnet';
 local generateSecret = import '../utils/generate-secret.libsonnet';
+
 local prometheus = import 'github.com/prometheus-operator/kube-prometheus/jsonnet/kube-prometheus/components/prometheus.libsonnet';
 
 function(params)
@@ -63,16 +65,7 @@ function(params)
       },
     },
 
-    servingCertsCaBundle+: {
-      apiVersion: 'v1',
-      kind: 'ConfigMap',
-      metadata+: {
-        name: 'serving-certs-ca-bundle',
-        namespace: cfg.namespace,
-        annotations: { 'service.alpha.openshift.io/inject-cabundle': 'true' },
-      },
-      data: { 'service-ca.crt': '' },
-    },
+    servingCertsCaBundle+: generateCertInjection.SCOCaBundleCM(cfg.namespace, 'serving-certs-ca-bundle'),
 
     // As Prometheus is protected by the kube-rbac-proxy it requires the
     // ability to create TokenReview and SubjectAccessReview requests.
@@ -372,7 +365,9 @@ function(params)
         ],
       },
     },
-    // Removing PDB since it doesn't allow cluster upgrade when hard pod anti affinity is not set https://github.com/openshift/cluster-monitoring-operator/pull/1198
-    // Review hard anti-affinity changes and then we can add back PDB
-    podDisruptionBudget:: {},
+
+    // TODO: remove podDisruptionBudget once https://github.com/prometheus-operator/kube-prometheus/pull/1156 is merged
+    podDisruptionBudget+: {
+      apiVersion: 'policy/v1',
+    },
   }
